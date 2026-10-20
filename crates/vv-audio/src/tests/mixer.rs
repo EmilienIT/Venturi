@@ -271,6 +271,9 @@ fn a_pitch_corrected_compound_containing_itself_is_silent_and_never_stretched() 
         .tracks
         .push(audio_track(vec![clip_at(compound, 0, 0, 5)]));
     let mut clip = sped_up_clip(compound, Rational::new(2, 1), 5);
+    // From the start of the compound's own audio: without the cycle guard,
+    // `frames` would not be empty and a stretch would really be requested.
+    clip.source_offset = 0;
     clip.pitch_correction = true;
     let tl = timeline(vec![audio_track(vec![clip])]);
     let mut source = FakeStretch::default();

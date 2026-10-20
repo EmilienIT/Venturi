@@ -1218,17 +1218,26 @@ fn nested_timeline_reaches_itself(project: &Project, start: TimelineId) -> bool 
         let Some(timeline) = project.timelines.get(current) else {
             continue;
         };
-        for clip in timeline.tracks.iter().flat_map(|t| t.clips.iter()) {
-            let ClipSource::Media(id) = &clip.source else {
-                continue;
-            };
-            let Some(nested) = project.media_pool.get(*id).and_then(|m| m.compound) else {
-                continue;
-            };
-            if nested == start {
-                return true;
+        // Same tracks and clips `collect_clips` itself would follow: a
+        // disabled or muted reference is never actually mixed, so it must
+        // not make a playable compound silent.
+        for (_, track) in timeline.audible_tracks() {
+            for clip in track
+                .clips
+                .iter()
+                .filter(|c| !c.disabled && c.freeze.is_none())
+            {
+                let ClipSource::Media(id) = &clip.source else {
+                    continue;
+                };
+                let Some(nested) = project.media_pool.get(*id).and_then(|m| m.compound) else {
+                    continue;
+                };
+                if nested == start {
+                    return true;
+                }
+                stack.push(nested);
             }
-            stack.push(nested);
         }
     }
     false
