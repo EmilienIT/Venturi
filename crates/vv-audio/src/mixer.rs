@@ -898,7 +898,10 @@ fn collect_clips(
             let nested_placement = placement + span.start as i64 - span.source_offset as i64;
             let input = if pitch_corrected {
                 let nested = item.compound.and_then(|id| project.timelines.get(id));
-                if nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH {
+                let is_cycle = item
+                    .compound
+                    .is_some_and(|id| nested_timeline_reaches_itself(project, id));
+                if is_cycle || (nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH) {
                     cyclic = true;
                     continue;
                 }
@@ -1197,6 +1200,38 @@ fn normalize_gain(target_db: f32, reading: LevelReading) -> Option<f32> {
     level
         .filter(|level| *level > 1e-6)
         .map(|level| (db_to_linear(target_db) / level).min(db_to_linear(vv_core::GAIN_DB_MAX)))
+}
+
+/// `true` if `start`, walked outward through the compound clips of its own
+/// tracks (at any depth), reaches itself: a cheap, depth-independent check
+/// so a self-referencing pitch-corrected clip is caught before a stretch is
+/// requested for it, rather than only after `MAX_COMPOUND_DEPTH` copies of
+/// it were queued. Only a hand-edited project can contain such a cycle:
+/// `Project::would_create_a_cycle` prevents creating one from the UI.
+fn nested_timeline_reaches_itself(project: &Project, start: TimelineId) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![start];
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+        let Some(timeline) = project.timelines.get(current) else {
+            continue;
+        };
+        for clip in timeline.tracks.iter().flat_map(|t| t.clips.iter()) {
+            let ClipSource::Media(id) = &clip.source else {
+                continue;
+            };
+            let Some(nested) = project.media_pool.get(*id).and_then(|m| m.compound) else {
+                continue;
+            };
+            if nested == start {
+                return true;
+            }
+            stack.push(nested);
+        }
+    }
+    false
 }
 
 /// The nested timeline of compound clip `media_id`, ready to be mixed in

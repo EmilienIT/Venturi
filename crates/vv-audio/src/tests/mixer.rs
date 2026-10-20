@@ -260,6 +260,28 @@ fn a_compound_containing_itself_is_silent() {
     assert!(snap.clips.is_empty());
 }
 
+/// Same safety net for the pitch-corrected path: a stretch must never be
+/// requested for a compound that contains itself, rather than one per
+/// depth up to `MAX_COMPOUND_DEPTH`.
+#[test]
+fn a_pitch_corrected_compound_containing_itself_is_silent_and_never_stretched() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested]
+        .tracks
+        .push(audio_track(vec![clip_at(compound, 0, 0, 5)]));
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 5);
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let mut source = FakeStretch::default();
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(snap.clips.is_empty());
+    assert!(
+        source.asked.is_empty(),
+        "a self-referencing clip is never stretched"
+    );
+}
+
 /// The bug case: media at 9.99 fps (10000/1001, the small-scale analogue
 /// of 59.94 on 60) on a 10 fps timeline. Conformed, the clip
 /// lasts on the timeline as long as its audio does, and the mix at the end of the clip is
