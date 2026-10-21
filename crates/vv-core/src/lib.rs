@@ -1,3 +1,4 @@
+pub mod camera_shake;
 pub mod clipboard;
 pub mod command;
 pub mod edit;
@@ -10,6 +11,7 @@ pub mod otio;
 pub mod persistence;
 pub mod pool;
 
+pub use camera_shake::*;
 pub use command::{
     AddAudioEffect, AddTrack, Command, CommandLabel, CompositeCommand, CompoundPlan, FadeEdge,
     GroupMark, History, InsertClip, JoinableStep, KeyframePick, KeyframeTarget, KeyframeValue,

@@ -762,6 +762,7 @@ fn a_title_layer_shows_the_text_of_its_frame() {
             &clip,
             frame,
             (4, 4),
+            vv_core::Rational::new(25, 1),
             &mut NoMediaProvider,
         )
         .unwrap()
@@ -779,9 +780,16 @@ fn a_title_layer_shows_the_text_of_its_frame() {
         "First".into(),
         vv_core::Interpolation::Hold,
     );
-    let first = clip_layer(&Project::default(), &two, 5, (4, 4), &mut NoMediaProvider)
-        .unwrap()
-        .unwrap();
+    let first = clip_layer(
+        &Project::default(),
+        &two,
+        5,
+        (4, 4),
+        vv_core::Rational::new(25, 1),
+        &mut NoMediaProvider,
+    )
+    .unwrap()
+    .unwrap();
     assert!(matches!(first.content, OwnedContent::Text(t) if t.display_text() == "First"));
 }
 
@@ -809,4 +817,114 @@ fn a_matte_over_an_adjustment_cuts_out_the_adjusted_stack() {
         "left: inside the matte, the darkened blue: {inside:?}"
     );
     assert_eq!(px(3, 1), &[0, 0, 0, 0], "right: outside, nothing");
+}
+
+#[test]
+fn camera_shake_is_evaluated_for_normal_and_adjustment_layers_and_survives_a_split() {
+    let mut clip = solid_clip(1, 0, 100, [1.0; 2]);
+    clip.effects
+        .filters
+        .push(vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake));
+    let project = Project::default();
+    let fps = Rational::new(25, 1);
+    let layer = |clip: &Clip, frame| {
+        clip_layer(
+            &project,
+            clip,
+            frame,
+            (1920, 1080),
+            fps,
+            &mut NoMediaProvider,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let expected = layer(&clip, 61).transform;
+    assert_ne!(expected, Transform::default());
+    assert!(
+        layer(&clip, 61).filters.is_empty(),
+        "shake must not consume pixel filter slots"
+    );
+    clip.source_offset = 50;
+    clip.timeline_start = 50;
+    clip.timeline_len = 50;
+    assert_eq!(
+        layer(&clip, 61).transform,
+        expected,
+        "splitting must keep the motion phase"
+    );
+    clip.source = ClipSource::Adjustment;
+    assert_eq!(layer(&clip, 61).transform, expected);
+    clip.effects.filters[0].enabled = false;
+    assert_eq!(layer(&clip, 61).transform, Transform::default());
+}
+
+#[test]
+fn camera_shake_layer_uses_the_timeline_clock_for_generators() {
+    let mut clip = solid_clip(1, 0, 100, [1.0; 2]);
+    clip.effects
+        .filters
+        .push(vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake));
+    let project = Project::default();
+    let mut provider = NoMediaProvider;
+    let a = clip_layer(
+        &project,
+        &clip,
+        25,
+        (1920, 1080),
+        Rational::new(25, 1),
+        &mut provider,
+    )
+    .unwrap()
+    .unwrap();
+    let b = clip_layer(
+        &project,
+        &clip,
+        60,
+        (1920, 1080),
+        Rational::new(60, 1),
+        &mut provider,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(a.transform, b.transform);
+}
+
+#[test]
+fn camera_shake_changes_rendered_pixels_and_repeated_renders_match() {
+    let compositor = vv_render::Compositor::new_headless();
+    let project = Project::default();
+    let mut clip = solid_clip(1, 0, 100, [0.5; 2]);
+    clip.effects.color = Some(vv_core::Keyframed::constant(RED));
+    let mut filter = vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake);
+    filter.shake.auto_zoom = false;
+    filter.shake.track_mut(vv_core::ShakeParam::Pan).default = 10.0;
+    clip.effects.filters.push(filter);
+    let render = |frame| {
+        let layer = clip_layer(
+            &project,
+            &clip,
+            frame,
+            (64, 64),
+            Rational::new(25, 1),
+            &mut NoMediaProvider,
+        )
+        .unwrap()
+        .unwrap();
+        compositor.render_layers_rgba_transparent(
+            &[layer.as_render()],
+            vv_render::OutputFrame::exact(64, 64),
+        )
+    };
+    let first = render(0);
+    let later = render(15);
+    assert_ne!(first, later);
+    assert!(
+        first
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[0] > 200 && p[3] > 200)
+    );
+    assert_eq!(first, render(0));
 }

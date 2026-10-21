@@ -1107,6 +1107,7 @@ pub const GAIN_DB_MAX: f32 = 30.0;
 /// `vv_render`, which does not know the meaning of each one, only its id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterKind {
+    CameraShake,
     ColorCorrection,
     BoxBlur,
     GaussianBlur,
@@ -1236,6 +1237,7 @@ pub struct ClipFilter {
     pub grow: Keyframed<f32>,
     /// Drop shadow only.
     pub color: Rgba,
+    pub shake: crate::CameraShakeTracks,
 }
 
 /// `ClipFilter` as saved, older files included.
@@ -1257,6 +1259,8 @@ struct StoredClipFilter {
     grow: Keyframed<f32>,
     #[serde(default = "default_shadow_color")]
     color: Rgba,
+    #[serde(default)]
+    shake: crate::CameraShakeTracks,
 }
 
 fn default_shadow_offset() -> [Keyframed<f32>; 2] {
@@ -1274,6 +1278,7 @@ fn default_shadow_color() -> Rgba {
 /// `FilterKind` plus the kinds that no longer exist.
 #[derive(Deserialize)]
 enum StoredFilterKind {
+    CameraShake,
     /// Replaced by `ColorCorrection` with the black and white preset.
     Grayscale,
     ColorCorrection,
@@ -1286,6 +1291,7 @@ enum StoredFilterKind {
 impl From<StoredClipFilter> for ClipFilter {
     fn from(stored: StoredClipFilter) -> Self {
         let (kind, grade) = match stored.kind {
+            StoredFilterKind::CameraShake => (FilterKind::CameraShake, stored.grade),
             StoredFilterKind::Grayscale => (
                 FilterKind::ColorCorrection,
                 GradeTracks::constant(GradePreset::BlackAndWhite.value()),
@@ -1306,6 +1312,7 @@ impl From<StoredClipFilter> for ClipFilter {
             offset: stored.offset,
             grow: stored.grow,
             color: stored.color,
+            shake: stored.shake,
         }
     }
 }
@@ -1361,6 +1368,7 @@ impl ClipFilter {
             offset: default_shadow_offset(),
             grow: default_shadow_grow(),
             color: Rgba::BLACK,
+            shake: crate::CameraShakeTracks::default(),
         }
     }
 
@@ -1659,6 +1667,7 @@ impl Default for EffectStack {
 
 impl EffectStack {
     /// See `Keyframed::drop_before`, on every animatable parameter.
+    /// Camera shake keeps its curves so a cut preserves the integrated speed phase.
     pub fn drop_keyframes_before(&mut self, start: FrameIdx) {
         self.for_each_f32_track(|k| k.drop_before(start));
         if let Some(c) = &mut self.color {
@@ -1700,6 +1709,9 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.shift(delta);
+            for track in f.shake.tracks_mut() {
+                track.shift(delta);
+            }
         }
         for m in &mut self.masks {
             m.path.shift(delta);
@@ -1732,6 +1744,9 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.rescale_times(from, to);
+            for track in f.shake.tracks_mut() {
+                track.rescale_times(from, to);
+            }
         }
         for m in &mut self.masks {
             m.path.rescale_times(from, to);

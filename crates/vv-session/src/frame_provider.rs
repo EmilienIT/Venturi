@@ -414,6 +414,7 @@ pub fn clip_layer(
     clip: &Clip,
     frame: FrameIdx,
     timeline_size: (u32, u32),
+    timeline_fps: vv_core::Rational,
     provider: &mut dyn FrameProvider,
 ) -> Result<Option<OwnedLayer>, ExportError> {
     let source_frame = clip.source_frame_at(frame);
@@ -431,10 +432,13 @@ pub fn clip_layer(
         project,
         clip,
         source_frame,
+        (clip.source_offset as f64 + frame as f64 - clip.timeline_start as f64)
+            / clip.rate().as_f64(),
         transform,
         opacity,
         content,
         timeline_size,
+        timeline_fps,
     ))
 }
 
@@ -476,18 +480,37 @@ fn build_layer(
     project: &Project,
     clip: &Clip,
     source_frame: FrameIdx,
-    transform: Transform,
+    source_position: f64,
+    mut transform: Transform,
     opacity: f32,
     content: ClipContent,
     timeline_size: (u32, u32),
+    timeline_fps: vv_core::Rational,
 ) -> Option<OwnedLayer> {
     let filters: Vec<vv_core::FilterValue> = clip
         .effects
         .filters
         .iter()
-        .filter(|f| f.enabled)
+        .filter(|f| f.enabled && f.kind != vv_core::FilterKind::CameraShake)
         .map(|f| f.value_at(source_frame))
         .collect();
+    let source_fps = match clip.source {
+        ClipSource::Media(id) => project
+            .media_pool
+            .get(id)
+            .map_or(timeline_fps.as_f64(), |m| m.meta.fps.as_f64()),
+        _ => timeline_fps.as_f64(),
+    };
+    for filter in clip
+        .effects
+        .filters
+        .iter()
+        .filter(|f| f.enabled && f.kind == vv_core::FilterKind::CameraShake)
+    {
+        filter
+            .shake
+            .apply_at(&mut transform, source_position, source_fps, timeline_size);
+    }
     let masks = clip
         .effects
         .masks
@@ -557,6 +580,7 @@ fn crossing_side_layer(
     clip: &Clip,
     frame: FrameIdx,
     timeline_size: (u32, u32),
+    timeline_fps: vv_core::Rational,
     provider: &mut dyn FrameProvider,
     extra_offset: [f32; 2],
     extra_opacity: f32,
@@ -576,10 +600,13 @@ fn crossing_side_layer(
         project,
         clip,
         source_frame,
+        (clip.source_offset as f64 + frame as f64 - clip.timeline_start as f64)
+            / clip.rate().as_f64(),
         transform,
         opacity,
         content,
         timeline_size,
+        timeline_fps,
     ))
 }
 
@@ -593,6 +620,7 @@ fn crossing_layers(
     crossing: &vv_core::CrossTransition,
     frame: FrameIdx,
     timeline_size: (u32, u32),
+    timeline_fps: vv_core::Rational,
     provider: &mut dyn FrameProvider,
 ) -> Result<Vec<OwnedLayer>, ExportError> {
     let progress = crossing.eased_progress_at(frame, left, right);
@@ -604,6 +632,7 @@ fn crossing_layers(
             crossing,
             progress,
             timeline_size,
+            timeline_fps,
             provider,
         );
     }
@@ -631,6 +660,7 @@ fn crossing_layers(
         left,
         frame,
         timeline_size,
+        timeline_fps,
         provider,
         left_offset,
         left_opacity,
@@ -640,6 +670,7 @@ fn crossing_layers(
         right,
         frame,
         timeline_size,
+        timeline_fps,
         provider,
         right_offset,
         right_opacity,
@@ -657,11 +688,21 @@ fn smooth_cut_layers(
     crossing: &vv_core::CrossTransition,
     progress: f32,
     timeline_size: (u32, u32),
+    timeline_fps: vv_core::Rational,
     provider: &mut dyn FrameProvider,
 ) -> Result<Vec<OwnedLayer>, ExportError> {
     let window = crossing.window(left, right);
     let side = |clip: &Clip, frame: FrameIdx, provider: &mut dyn FrameProvider| {
-        crossing_side_layer(project, clip, frame, timeline_size, provider, [0.0; 2], 1.0)
+        crossing_side_layer(
+            project,
+            clip,
+            frame,
+            timeline_size,
+            timeline_fps,
+            provider,
+            [0.0; 2],
+            1.0,
+        )
     };
     let (Some(from), Some(mut to)) = (
         side(left, window.start, provider)?,
@@ -713,12 +754,15 @@ pub fn track_layers_at(
             crossing,
             frame,
             timeline_size,
+            timeline.fps,
             provider,
         );
     }
-    Ok(clip_layer(project, clip, frame, timeline_size, provider)?
-        .into_iter()
-        .collect())
+    Ok(
+        clip_layer(project, clip, frame, timeline_size, timeline.fps, provider)?
+            .into_iter()
+            .collect(),
+    )
 }
 
 #[cfg(test)]
