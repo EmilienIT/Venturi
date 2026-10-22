@@ -1217,7 +1217,7 @@ impl Lerp for BlurDirection {
 /// `EffectStack::filters` is the order of application, configurable
 /// by the user (several filters on the same clip, in a sequence they choose);
 /// `enabled` suspends it without removing it from the sequence.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(from = "StoredClipFilter")]
 pub struct ClipFilter {
     pub kind: FilterKind,
@@ -1238,6 +1238,28 @@ pub struct ClipFilter {
     /// Drop shadow only.
     pub color: Rgba,
     pub shake: crate::CameraShakeTracks,
+}
+
+impl Serialize for ClipFilter {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let has_shake = self.kind == FilterKind::CameraShake;
+        let mut state =
+            serializer.serialize_struct("ClipFilter", if has_shake { 10 } else { 9 })?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("enabled", &self.enabled)?;
+        state.serialize_field("radius", &self.radius)?;
+        state.serialize_field("direction", &self.direction)?;
+        state.serialize_field("amount", &self.amount)?;
+        state.serialize_field("grade", &self.grade)?;
+        state.serialize_field("offset", &self.offset)?;
+        state.serialize_field("grow", &self.grow)?;
+        state.serialize_field("color", &self.color)?;
+        if has_shake {
+            state.serialize_field("shake", &self.shake)?;
+        }
+        state.end()
+    }
 }
 
 /// `ClipFilter` as saved, older files included.

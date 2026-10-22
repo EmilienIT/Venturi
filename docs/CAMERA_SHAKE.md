@@ -23,14 +23,23 @@ attributes and library presets carry the settings and keyframes.
 The motion is deterministic, evaluated in source time and composed with
 the clip's manual transform before pixel filters. Seeking, splitting or
 moving a clip does not restart its motion. Retiming also retimes the shake.
+This source-time clock is intentional: the movement follows the recorded
+action and its effect keyframes when a clip is retimed. For example, a
+2 Hz shake plays at 0.5 Hz on a 0.25× clip and at 4 Hz on a 2× clip.
+To keep the same apparent rate, divide Speed by the playback multiplier
+(8 Hz at 0.25×, or 1 Hz at 2×, for an apparent 2 Hz).
 Preview, nested timelines and export use the same evaluation. Speed
 animation integrates the speed curve so changing speed does not jump to
 an unrelated part of the motion.
 
-Edge compensation covers the shake envelope on an otherwise full-frame
-image; existing crop, letterboxing, placement or transparency can still
+Edge compensation zooms around the clip's own centre, so enabling it on a
+positioned PiP clip does not add outward drift, even with a custom anchor.
+It covers the shake envelope on an otherwise full-frame image; existing
+crop, letterboxing, placement or transparency can still
 leave uncovered areas. It does not synthesize pixels or apply motion blur.
 
 The native project format and Venturi's OTIO metadata preserve the effect.
+Parameters are saved by name; missing parameters load with their defaults.
+Projects saved with the original positional tracks can still be opened.
 Other editors do not receive a native Camera Shake effect or baked
 keyframes through OTIO.

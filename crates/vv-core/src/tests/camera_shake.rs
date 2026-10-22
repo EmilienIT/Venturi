@@ -189,3 +189,137 @@ fn procedural_motion_is_not_quantized_to_decoded_source_frames() {
         "a 50 fps timeline must animate a 25 fps source every frame"
     );
 }
+
+#[test]
+fn named_tracks_round_trip_and_missing_parameters_keep_their_defaults() {
+    let shake: CameraShakeTracks = ron::from_str(
+        "(params: {Tilt: (keyframes: [], default: 3.0), Pan: (keyframes: [], default: 2.0)}, seed: 42, auto_zoom: false)",
+    )
+    .unwrap();
+    for param in ShakeParam::ALL {
+        let expected = match param {
+            ShakeParam::Pan => 2.0,
+            ShakeParam::Tilt => 3.0,
+            _ => param.default_value(),
+        };
+        assert_eq!(shake.track(param).default, expected);
+    }
+    assert_eq!(shake.seed, 42);
+    assert!(!shake.auto_zoom);
+    let ron = ron::to_string(&shake).unwrap();
+    assert!(ron.contains("Pan:(keyframes:[],default:2.0)"), "{ron}");
+    assert_eq!(ron::from_str::<CameraShakeTracks>(&ron).unwrap(), shake);
+    let mut json = serde_json::to_value(&shake).unwrap();
+    assert_eq!(json["params"]["Pan"]["default"], 2.0);
+    json["params"].as_object_mut().unwrap().remove("Smoothness");
+    assert_eq!(
+        serde_json::from_value::<CameraShakeTracks>(json).unwrap(),
+        shake
+    );
+    assert_eq!(
+        ron::from_str::<CameraShakeTracks>("()").unwrap(),
+        CameraShakeTracks::default()
+    );
+}
+
+#[test]
+fn positional_tracks_from_the_first_version_still_load() {
+    let mut shake = CameraShakeTracks::default();
+    shake.seed = 17;
+    shake.auto_zoom = false;
+    shake
+        .track_mut(ShakeParam::Pan)
+        .upsert(12, 2.5, Interpolation::EaseInOut);
+    let legacy = format!(
+        "(params:{},seed:17,auto_zoom:false)",
+        ron::to_string(&shake.params).unwrap()
+    );
+    assert_eq!(ron::from_str::<CameraShakeTracks>(&legacy).unwrap(), shake);
+    let legacy = serde_json::json!({"params": shake.params, "seed": 17, "auto_zoom": false});
+    assert_eq!(
+        serde_json::from_value::<CameraShakeTracks>(legacy).unwrap(),
+        shake
+    );
+}
+
+#[test]
+fn shake_settings_are_only_written_for_camera_shake_filters() {
+    for kind in [
+        FilterKind::BoxBlur,
+        FilterKind::GaussianBlur,
+        FilterKind::DropShadow,
+        FilterKind::Exposure,
+        FilterKind::ColorCorrection,
+    ] {
+        let filter = ClipFilter::new(kind);
+        let json = serde_json::to_value(&filter).unwrap();
+        assert!(json.get("shake").is_none());
+        let ron = ron::to_string(&filter).unwrap();
+        assert!(!ron.contains("shake:"), "{ron}");
+        assert_eq!(ron::from_str::<ClipFilter>(&ron).unwrap(), filter);
+    }
+    let filter = ClipFilter::new(FilterKind::CameraShake);
+    let json = serde_json::to_value(&filter).unwrap();
+    for param in ShakeParam::ALL {
+        let name = serde_json::to_value(param).unwrap();
+        assert_eq!(
+            json["shake"]["params"][name.as_str().unwrap()]["default"],
+            param.default_value()
+        );
+    }
+    assert_eq!(serde_json::from_value::<ClipFilter>(json).unwrap(), filter);
+}
+
+#[test]
+fn edge_compensation_preserves_the_shaken_clip_centre() {
+    let centre = |t: Transform| {
+        let (sin, cos) = t.rotation.to_radians().sin_cos();
+        let x = t.anchor[0] * t.zoom[0];
+        let y = t.anchor[1] * t.zoom[1];
+        [
+            t.position[0] + t.anchor[0] - cos * x - sin * y,
+            t.position[1] + t.anchor[1] + sin * x - cos * y,
+        ]
+    };
+    for anchor in [[0.0, 0.0], [37.0, -51.0]] {
+        let original = Transform {
+            position: [640.0, 260.0],
+            zoom: [0.25, 0.4],
+            rotation: 30.0,
+            anchor,
+            ..Default::default()
+        };
+        for frame in [0, 19, 41, 70] {
+            let mut shake = CameraShakeTracks::default();
+            let mut compensated = original;
+            shake.apply(&mut compensated, frame, 25.0, (1920, 1080));
+            shake.auto_zoom = false;
+            let mut uncompensated = original;
+            shake.apply(&mut uncompensated, frame, 25.0, (1920, 1080));
+            for (a, b) in centre(compensated).into_iter().zip(centre(uncompensated)) {
+                assert!((a - b).abs() < 0.0002, "{a} != {b}");
+            }
+            assert!(compensated.zoom[0] > uncompensated.zoom[0]);
+            assert_eq!(compensated.rotation, uncompensated.rotation);
+        }
+    }
+}
+
+#[test]
+fn a_new_variation_does_not_reuse_the_previous_fast_motion() {
+    let pan = |seed, smoothness, frame| {
+        let mut shake = CameraShakeTracks::default();
+        shake.seed = seed;
+        shake.auto_zoom = false;
+        for param in [ShakeParam::Tilt, ShakeParam::Rotation, ShakeParam::Zoom] {
+            shake.track_mut(param).default = 0.0;
+        }
+        shake.track_mut(ShakeParam::Smoothness).default = smoothness;
+        at(&shake, frame).position[0]
+    };
+    for seed in [0_u32, 1, u32::MAX] {
+        let fast = 2.0 * pan(seed, 0.0, 19) - pan(seed, 1.0, 19);
+        let next_slow = pan(seed.wrapping_add(1), 1.0, 19 * 4);
+        assert!((fast - next_slow).abs() > 0.001);
+    }
+}

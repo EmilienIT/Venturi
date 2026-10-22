@@ -418,17 +418,15 @@ pub fn clip_layer(
     provider: &mut dyn FrameProvider,
 ) -> Result<Option<OwnedLayer>, ExportError> {
     let source_frame = clip.source_frame_at(frame);
-    let mut transform = clip.effects.transform.value_at(source_frame);
+    let transform = clip.effects.transform.value_at(source_frame);
     let push = clip.transition_offset_at(
         frame,
         (timeline_size.0 as f32, timeline_size.1 as f32),
         transform.zoom,
     );
-    transform.position[0] += push[0];
-    transform.position[1] += push[1];
     let opacity = clip.fade_multiplier_at(frame) * clip.transition_opacity_at(frame);
     let content = clip_content(project, clip, frame, provider)?;
-    Ok(build_layer(
+    let mut layer = build_layer(
         project,
         clip,
         source_frame,
@@ -439,7 +437,12 @@ pub fn clip_layer(
         content,
         timeline_size,
         timeline_fps,
-    ))
+    );
+    if let Some(layer) = &mut layer {
+        layer.transform.position[0] += push[0];
+        layer.transform.position[1] += push[1];
+    }
+    Ok(layer)
 }
 
 /// What a clip shows at `timeline_frame`: nothing if it is not a Media clip,
@@ -586,9 +589,7 @@ fn crossing_side_layer(
     extra_opacity: f32,
 ) -> Result<Option<OwnedLayer>, ExportError> {
     let source_frame = clip.source_frame_at(frame);
-    let mut transform = clip.effects.transform.value_at(source_frame);
-    transform.position[0] += extra_offset[0];
-    transform.position[1] += extra_offset[1];
+    let transform = clip.effects.transform.value_at(source_frame);
     let opacity = clip.fade_multiplier_at(frame) * extra_opacity;
     let content = clip_content(
         project,
@@ -596,7 +597,7 @@ fn crossing_side_layer(
         held_timeline_frame(project, clip, frame),
         provider,
     )?;
-    Ok(build_layer(
+    let mut layer = build_layer(
         project,
         clip,
         source_frame,
@@ -607,7 +608,12 @@ fn crossing_side_layer(
         content,
         timeline_size,
         timeline_fps,
-    ))
+    );
+    if let Some(layer) = &mut layer {
+        layer.transform.position[0] += extra_offset[0];
+        layer.transform.position[1] += extra_offset[1];
+    }
+    Ok(layer)
 }
 
 /// The layers of an active crossing transition at `frame`: tail of `left`,

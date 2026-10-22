@@ -52,6 +52,7 @@ impl ShakeParam {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CameraShakeTracks {
+    #[serde(with = "param_tracks")]
     params: [Keyframed<f32>; 7],
     pub seed: u32,
     pub auto_zoom: bool,
@@ -105,7 +106,7 @@ impl CameraShakeTracks {
         let noise = |channel: u32| {
             let seed = self.seed.wrapping_add(channel.wrapping_mul(0x9e3779b9));
             let slow = value_noise(phase, seed);
-            let fast = value_noise(phase * 4.0, seed.wrapping_add(1));
+            let fast = value_noise(phase * 4.0, seed.wrapping_add(0x85ebca6b));
             slow * (0.5 + 0.5 * smoothness) + fast * (0.5 - 0.5 * smoothness)
         };
         let (w, h) = (size.0 as f32, size.1 as f32);
@@ -114,14 +115,16 @@ impl CameraShakeTracks {
         let angle = value(ShakeParam::Rotation) * amount;
         let zoom = value(ShakeParam::Zoom) * amount / 100.0;
         let rotation = angle * noise(2);
-        let mut scale = (zoom * noise(3)).exp();
-        if self.auto_zoom {
+        let scale = (zoom * noise(3)).exp();
+        let compensation = if self.auto_zoom {
             // A fixed envelope avoids pumping as the random motion changes.
             let sin = angle.to_radians().sin().abs();
             let margin = (1.0 + 2.0 * (pan + sin * tilt) / w + sin * h / w)
                 .max(1.0 + 2.0 * (tilt + sin * pan) / h + sin * w / h);
-            scale *= margin * zoom.exp();
-        }
+            margin * zoom.exp()
+        } else {
+            1.0
+        };
         let (sin, cos) = rotation.to_radians().sin_cos();
         let x = transform.position[0] + transform.anchor[0];
         let y = transform.position[1] + transform.anchor[1];
@@ -132,6 +135,67 @@ impl CameraShakeTracks {
         ];
         transform.zoom = transform.zoom.map(|z| z * scale);
         transform.rotation += rotation;
+        // Overscan grows around the clip's centre, including with a custom anchor.
+        let (sin, cos) = transform.rotation.to_radians().sin_cos();
+        let x = transform.anchor[0] * transform.zoom[0];
+        let y = transform.anchor[1] * transform.zoom[1];
+        transform.position[0] += (compensation - 1.0) * (cos * x + sin * y);
+        transform.position[1] += (compensation - 1.0) * (-sin * x + cos * y);
+        transform.zoom = transform.zoom.map(|z| z * compensation);
+    }
+}
+
+mod param_tracks {
+    use super::*;
+    use serde::de::{MapAccess, SeqAccess, Visitor};
+
+    pub fn serialize<S: serde::Serializer>(
+        params: &[Keyframed<f32>; 7],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(ShakeParam::ALL.map(|p| (p, &params[p.index()])))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[Keyframed<f32>; 7], D::Error> {
+        struct TracksVisitor;
+        impl<'de> Visitor<'de> for TracksVisitor {
+            type Value = [Keyframed<f32>; 7];
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("named camera shake tracks or a legacy track array")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut params = CameraShakeTracks::default().params;
+                while let Some((param, track)) = map.next_entry::<ShakeParam, Keyframed<f32>>()? {
+                    params[param.index()] = track;
+                }
+                Ok(params)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut params = CameraShakeTracks::default().params;
+                // Preserve the original positional format independently of enum order.
+                for param in [
+                    ShakeParam::MotionScale,
+                    ShakeParam::Speed,
+                    ShakeParam::Pan,
+                    ShakeParam::Tilt,
+                    ShakeParam::Rotation,
+                    ShakeParam::Zoom,
+                    ShakeParam::Smoothness,
+                ] {
+                    let Some(track) = seq.next_element()? else {
+                        break;
+                    };
+                    params[param.index()] = track;
+                }
+                Ok(params)
+            }
+        }
+        deserializer.deserialize_any(TracksVisitor)
     }
 }
 

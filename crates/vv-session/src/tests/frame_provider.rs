@@ -891,6 +891,149 @@ fn camera_shake_layer_uses_the_timeline_clock_for_generators() {
 }
 
 #[test]
+fn camera_shake_does_not_scale_or_rotate_single_edge_push_offsets() {
+    let project = Project::default();
+    let size = (1920, 1080);
+    let fps = Rational::new(25, 1);
+    for direction in PushDirection::ALL {
+        let mut clip = solid_clip(1, 0, 100, [0.8, 1.2]);
+        clip.effects
+            .filters
+            .push(vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake));
+        let mut transitioning = clip.clone();
+        let transition = Transition {
+            kind: TransitionKind::Push,
+            duration: 20,
+            direction,
+            ease: Ease::None,
+            curve: 0.0,
+        };
+        transitioning.effects.transition_in = Some(transition.clone());
+        transitioning.effects.transition_out = Some(transition);
+        for frame in [0, 5, 19, 80, 95, 99] {
+            let offset = transitioning.transition_offset_at(frame, (1920.0, 1080.0), [0.8, 1.2]);
+            let mut expected = clip_layer(&project, &clip, frame, size, fps, &mut NoMediaProvider)
+                .unwrap()
+                .unwrap()
+                .transform;
+            expected.position[0] += offset[0];
+            expected.position[1] += offset[1];
+            let actual = clip_layer(
+                &project,
+                &transitioning,
+                frame,
+                size,
+                fps,
+                &mut NoMediaProvider,
+            )
+            .unwrap()
+            .unwrap()
+            .transform;
+            assert_eq!(actual, expected, "{direction:?} at frame {frame}");
+        }
+    }
+}
+
+#[test]
+fn crossing_push_offsets_stay_in_timeline_space_when_only_one_side_shakes() {
+    let project = Project::default();
+    let size = (1920, 1080);
+    let fps = Rational::new(25, 1);
+    for direction in PushDirection::ALL {
+        for shaking_side in 0..2 {
+            let mut clips = [
+                solid_clip(1, 0, 100, [1.0; 2]),
+                solid_clip(2, 100, 100, [1.0; 2]),
+            ];
+            clips[shaking_side]
+                .effects
+                .filters
+                .push(vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake));
+            let crossing = CrossTransition {
+                left_clip: clips[0].id,
+                right_clip: clips[1].id,
+                transition: Transition {
+                    kind: TransitionKind::Push,
+                    duration: 20,
+                    direction,
+                    ease: Ease::None,
+                    curve: 0.0,
+                },
+            };
+            for frame in [90, 95, 100, 105, 109] {
+                let progress = crossing.eased_progress_at(frame, &clips[0], &clips[1]);
+                let (left_offset, right_offset) =
+                    crossing.offsets(progress, (1920.0, 1080.0), [1.0; 2], [1.0; 2]);
+                let layers = crossing_layers(
+                    &project,
+                    &clips[0],
+                    &clips[1],
+                    &crossing,
+                    frame,
+                    size,
+                    fps,
+                    &mut NoMediaProvider,
+                )
+                .unwrap();
+                assert_eq!(layers.len(), 2);
+                for ((clip, layer), offset) in
+                    clips.iter().zip(&layers).zip([left_offset, right_offset])
+                {
+                    let mut expected =
+                        clip_layer(&project, clip, frame, size, fps, &mut NoMediaProvider)
+                            .unwrap()
+                            .unwrap()
+                            .transform;
+                    expected.position[0] += offset[0];
+                    expected.position[1] += offset[1];
+                    assert_eq!(
+                        layer.transform, expected,
+                        "{direction:?}, shaking side {shaking_side}, frame {frame}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn retiming_deliberately_retimes_the_shake_clock() {
+    let project = Project::default();
+    let mut normal = solid_clip(1, 100, 400, [1.0; 2]);
+    normal
+        .effects
+        .filters
+        .push(vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake));
+    let layer = |clip: &Clip, frame| {
+        clip_layer(
+            &project,
+            clip,
+            frame,
+            (1920, 1080),
+            Rational::new(25, 1),
+            &mut NoMediaProvider,
+        )
+        .unwrap()
+        .unwrap()
+        .transform
+    };
+    for (speed, equivalent_frame) in [(Rational::new(1, 4), 110), (Rational::new(2, 1), 180)] {
+        let mut retimed = Clip::new(
+            ClipId(2),
+            ClipSource::SolidColor,
+            0,
+            100,
+            400,
+            Rational::one(),
+            speed,
+        );
+        retimed.effects = normal.effects.clone();
+        assert_eq!(layer(&retimed, 140), layer(&normal, equivalent_frame));
+        assert_ne!(layer(&retimed, 140), layer(&normal, 140));
+    }
+}
+
+#[test]
 fn camera_shake_changes_rendered_pixels_and_repeated_renders_match() {
     let compositor = vv_render::Compositor::new_headless();
     let project = Project::default();
