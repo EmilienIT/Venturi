@@ -1144,32 +1144,24 @@ fn decode_blocks(
                 }
                 let window = &windows[i];
                 if job.stream == streams[slot] {
-                    // A gap in the stream plays as silence.
-                    let gap_end = at.min(window.end);
-                    let until = window.end.min(to);
-                    let sent = (filled_to[i] >= gap_end
-                        || fill(
-                            &mut filling[i],
-                            &mut filled_to[i],
-                            gap_end,
-                            None,
-                            ch,
-                            job,
-                            decoded_tx,
-                        ))
-                        && (filled_to[i] >= until || {
-                            let skip = ((filled_to[i] - at) * ch) as usize;
-                            let samples = &remixed[skip..((until - at) * ch) as usize];
-                            fill(
-                                &mut filling[i],
-                                &mut filled_to[i],
-                                until,
-                                Some(samples),
-                                ch,
-                                job,
-                                decoded_tx,
-                            )
-                        });
+                    let sent = vv_audio::blocks::append_to_blocks(
+                        &mut filling[i],
+                        &mut filled_to[i],
+                        at,
+                        &remixed,
+                        window.end,
+                        channels,
+                        BLOCK_FRAMES,
+                        |index, samples| {
+                            decoded_tx
+                                .send(Decoded::Block {
+                                    job: job.id,
+                                    index,
+                                    samples: Arc::new(samples),
+                                })
+                                .is_ok()
+                        },
+                    );
                     if !sent {
                         receiver_gone = true;
                         return ControlFlow::Break(());
@@ -1226,42 +1218,6 @@ fn decode_blocks(
 
 fn new_block(ch: u64) -> Vec<f32> {
     Vec::with_capacity((BLOCK_FRAMES * ch) as usize)
-}
-
-/// Appends frames up to `until` to the block being filled (`samples`, or
-/// silence), sending every block it completes. `false` if the receiver is gone.
-fn fill(
-    filling: &mut Vec<f32>,
-    filled_to: &mut u64,
-    until: u64,
-    samples: Option<&[f32]>,
-    ch: u64,
-    job: &DecodeJob,
-    decoded_tx: &mpsc::Sender<Decoded>,
-) -> bool {
-    let mut offset = 0;
-    while *filled_to < until {
-        let block_end = (*filled_to / BLOCK_FRAMES + 1) * BLOCK_FRAMES;
-        let next = until.min(block_end);
-        let count = ((next - *filled_to) * ch) as usize;
-        match samples {
-            Some(samples) => filling.extend_from_slice(&samples[offset..offset + count]),
-            None => filling.resize(filling.len() + count, 0.0),
-        }
-        offset += count;
-        *filled_to = next;
-        if next == block_end {
-            let block = Decoded::Block {
-                job: job.id,
-                index: next / BLOCK_FRAMES - 1,
-                samples: Arc::new(std::mem::replace(filling, new_block(ch))),
-            };
-            if decoded_tx.send(block).is_err() {
-                return false;
-            }
-        }
-    }
-    true
 }
 
 #[cfg(test)]

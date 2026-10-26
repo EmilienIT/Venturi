@@ -1066,28 +1066,6 @@ impl KeptStream {
             + (self.filling.len() / PROJECT_CHANNELS as usize) as u64
     }
 
-    /// `None`: silence.
-    fn push(&mut self, mut frames: u64, mut samples: Option<&[f32]>) {
-        let ch = PROJECT_CHANNELS as u64;
-        while frames > 0 {
-            let room = BLOCK_FRAMES - self.filling.len() as u64 / ch;
-            let count = frames.min(room);
-            let len = (count * ch) as usize;
-            match &mut samples {
-                Some(s) => {
-                    self.filling.extend_from_slice(&s[..len]);
-                    *s = &s[len..];
-                }
-                None => self.filling.resize(self.filling.len() + len, 0.0),
-            }
-            frames -= count;
-            if count == room {
-                let block = std::mem::replace(&mut self.filling, new_block());
-                self.blocks.push_back(Arc::new(block));
-            }
-        }
-    }
-
     /// The blocks holding `frames`, up to `end` if it comes first.
     fn view(&self, frames: Range<u64>) -> SampleBlocks {
         let end = frames.end.min(self.end());
@@ -1186,18 +1164,21 @@ impl Reader {
 
     /// A gap in the stream plays as silence, as in the preview.
     fn append(&mut self, slot: usize, at: u64, samples: &[f32]) {
-        let ch = PROJECT_CHANNELS as u64;
         let kept = &mut self.kept[slot];
-        let end = kept.end();
-        let to = at + samples.len() as u64 / ch;
-        if to <= end {
-            return;
-        }
-        if at > end {
-            kept.push(at - end, None);
-        }
-        let skip = end.saturating_sub(at);
-        kept.push(to - at - skip, Some(&samples[(skip * ch) as usize..]));
+        let mut cursor = kept.end();
+        vv_audio::blocks::append_to_blocks(
+            &mut kept.filling,
+            &mut cursor,
+            at,
+            samples,
+            u64::MAX,
+            PROJECT_CHANNELS,
+            BLOCK_FRAMES,
+            |_, block| {
+                kept.blocks.push_back(Arc::new(block));
+                true
+            },
+        );
     }
 
     /// Drops the blocks before the first frame read in this chunk: the
