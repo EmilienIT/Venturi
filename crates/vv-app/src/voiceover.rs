@@ -176,7 +176,11 @@ impl VenturiApp {
             recorded.channels,
         )
         .map_err(|e| e.to_string())?;
-        let meta = vv_media::probe_media(&path).map_err(|e| e.to_string())?;
+        let mut meta = vv_media::probe_media(&path).map_err(|e| e.to_string())?;
+        // Container duration can include codec delay and padding.
+        meta.fps = self.session.project.timelines[timeline].fps;
+        meta.duration_frames =
+            ((recorded.seconds() * meta.fps.as_f64()).round() as FrameIdx).max(1);
 
         let group = self.session.history.begin_group();
         let media_id = self.session.add_media(path, meta.clone());

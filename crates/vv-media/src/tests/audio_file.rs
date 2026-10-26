@@ -48,3 +48,39 @@ fn an_unavailable_choice_falls_back_to_mp3_then_wav() {
         assert_eq!(AudioFileFormat::from_id(format.id()), Some(format));
     }
 }
+
+#[test]
+fn short_final_audio_frames_preserve_the_recorded_sample_count() {
+    let root = std::env::temp_dir().join(format!("vv-audio-tail-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture = Fixture(root);
+    for format in [
+        AudioFileFormat::Wav,
+        AudioFileFormat::Flac,
+        AudioFileFormat::Mp3,
+    ] {
+        if !format.is_available() {
+            continue;
+        }
+        for frames in [1_337, 48_000, 48_001] {
+            let samples = &tone(48_000)[..frames.min(48_000) * 2];
+            let mut samples = samples.to_vec();
+            samples.resize(frames * 2, 0.25);
+            let path = fixture.0.join(format!("{frames}.{}", format.extension()));
+            write_audio_file(&path, format, &samples, 48_000, 2).unwrap();
+            let decoded = crate::decode_audio_track(&path, 0).unwrap().unwrap();
+            assert_eq!(decoded.sample_rate, 48_000);
+            assert_eq!(
+                decoded.samples.len() / decoded.channels as usize,
+                frames,
+                "{format:?}"
+            );
+        }
+    }
+}
