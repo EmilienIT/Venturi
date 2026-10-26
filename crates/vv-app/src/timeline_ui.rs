@@ -5269,9 +5269,8 @@ fn sync_timeline_scroll(
 
     let max_offset_x = (content_width - viewport_width).max(0.0);
     let dt = ctx.input(|i| i.stable_dt).min(0.1);
-    // During playback the view follows the playhead: a residual inertia would
-    // make it slide away from the point it just centered it on above.
-    if !kinetic_scroll_enabled || playback_active {
+    // Residual inertia would move the view away from the revealed playhead.
+    if !kinetic_scroll_enabled || playback_active || reveal {
         state.hscroll_vel = 0.0;
     }
     let hovering_panel = pointer_over(ctx, panel_rect);

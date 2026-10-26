@@ -1,5 +1,59 @@
 use super::*;
 
+#[test]
+fn keyboard_steps_keep_the_playhead_visible_after_pan_inertia() {
+    let mut app = crate::VenturiApp::default();
+    let timeline = app.ensure_timeline();
+    let id = app.session.project.alloc_clip_id();
+    app.session.project.timelines[timeline].tracks[0]
+        .clips
+        .push(vv_core::Clip::from_source_range(
+            id,
+            vv_core::ClipSource::SolidColor,
+            0,
+            1000,
+            0,
+            vv_core::Rational::one(),
+        ));
+    app.scrub_audio = false;
+    let fps = app.session.project.timelines[timeline].fps.as_f64();
+    let ctx = egui::Context::default();
+    ctx.input_mut(|input| input.stable_dt = 0.05);
+    let scroll_id = egui::Id::new("keyboard_follow_regression");
+    let viewport = 200.0;
+    for (direction, playhead, offset) in [(1, 600, 0.0), (-1, 300, 500.0)] {
+        let mut scroll = egui::containers::scroll_area::State::default();
+        scroll.offset.x = offset;
+        scroll.store(&ctx, scroll_id);
+        app.arrow_hold = None;
+        app.timeline_state.playhead = playhead;
+        app.timeline_state.pixels_per_sec = fps as f32;
+        app.timeline_state.last_rendered_pps = fps as f32;
+        app.timeline_state.hscroll_vel = direction as f32 * 20_000.0;
+        app.step_playhead_with_arrows(Some(direction), 0.0);
+        sync_timeline_scroll(
+            &ctx,
+            scroll_id,
+            &mut app.timeline_state,
+            fps,
+            1.0,
+            viewport,
+            1000.0,
+            false,
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(viewport, 100.0)),
+            true,
+        );
+        let scroll = egui::containers::scroll_area::State::load(&ctx, scroll_id).unwrap();
+        let x = app.timeline_state.playhead as f32;
+        assert!(
+            x >= scroll.offset.x && x <= scroll.offset.x + viewport,
+            "playhead {x} outside {}..{}",
+            scroll.offset.x,
+            scroll.offset.x + viewport
+        );
+    }
+}
+
 /// Reported bug: splitting an audio clip (`SplitClip`) visibly
 /// moved the drawn waveform exactly at the cut
 /// point, because each half rounded its own bins to its own edges.
