@@ -93,13 +93,35 @@ fn recording_encoders_match_reference_decoded_lengths() {
     let root = std::env::temp_dir().join(format!("vv-audio-reference-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
     let dir = Fixture(root);
+    let cli = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .expect("ffmpeg must be on PATH");
+    assert!(cli.status.success(), "could not list FFmpeg CLI encoders");
+    let encoders = String::from_utf8(cli.stdout).unwrap();
+    let formats: Vec<_> = AudioFileFormat::available()
+        .into_iter()
+        .filter(|format| {
+            let available = encoders
+                .lines()
+                .any(|line| line.split_whitespace().nth(1) == Some(format.encoder_name()));
+            if !available {
+                eprintln!("{format:?} reference comparison not run: CLI encoder unavailable");
+            }
+            available
+        })
+        .collect();
+    assert!(
+        formats.contains(&AudioFileFormat::Wav),
+        "reference PCM encoder required"
+    );
     let mut failures = Vec::new();
     for frames in [1_337, 48_000, 48_001] {
         let mut samples = tone(48_000);
         samples.resize(frames * 2, 0.25);
         let source = dir.0.join(format!("{frames}-source.wav"));
         write_audio_file(&source, AudioFileFormat::Wav, &samples, 48_000, 2).unwrap();
-        for format in AudioFileFormat::available() {
+        for &format in &formats {
             let path = dir.0.join(format!("{frames}.{}", format.extension()));
             let reference = dir
                 .0
