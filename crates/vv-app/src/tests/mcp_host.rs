@@ -290,7 +290,27 @@ fn an_agent_export_shows_in_the_progress_window() {
     .unwrap();
 
     let job: vv_session::JobId = started.value["job_id"].as_str().unwrap().parse().unwrap();
-    assert_eq!(app.export.as_ref().map(|e| e.job), Some(job));
+    let displayed_job = app.export.as_ref().map(|e| e.job);
+    // Join the GPU worker before the next serial test creates a device.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let result = 'finished: loop {
+        for event in app.session.tick() {
+            if let vv_session::SessionEvent::ExportFinished {
+                job: finished_job,
+                result,
+            } = event
+                && finished_job == job
+            {
+                break 'finished result;
+            }
+        }
+        assert!(Instant::now() < deadline, "export did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(displayed_job, Some(job));
+    result.unwrap();
+    assert!(!app.session.is_exporting());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
