@@ -219,6 +219,17 @@ fn recorded_media_keeps_the_tail_beyond_its_rounded_timeline_clip() {
         "reusing the media must retain the recorded tail"
     );
     assert!((meta.duration_frames - 1) as f64 / meta.fps.as_f64() < take.seconds());
+    let media = &app.session.project.media_pool[id];
+    let decoded = vv_media::decode_audio_track(&media.path, 0)
+        .unwrap()
+        .unwrap();
+    let tail_start = decoded.sample_rate as usize * decoded.channels as usize;
+    let tail = decoded.samples.get(tail_start..).unwrap();
+    assert_eq!(tail.len(), 912, "the complete recorded tail must remain");
+    assert!(
+        tail.iter().all(|sample| (*sample - 0.25).abs() < 1e-4),
+        "the recorded tail must retain its audio samples"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
