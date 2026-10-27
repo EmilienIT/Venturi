@@ -323,6 +323,7 @@ fn assert_seek_matches_full_decode(path: &std::path::Path, tolerance: f32) {
 
 fn assert_seeks_match_full_decode(path: &std::path::Path, tolerance: f32, offsets: &[u64]) {
     let full = placed_full_decode(path);
+    let mut failures = Vec::new();
     for &from in offsets {
         let len = 48_000.min(full.len() as u64 / 2 - from);
         let got = seeked(path, from, len);
@@ -335,12 +336,23 @@ fn assert_seeks_match_full_decode(path: &std::path::Path, tolerance: f32, offset
                 (false, false) => m.max((g - w).abs()),
                 _ => f32::INFINITY,
             });
-        assert!(
-            worst <= tolerance,
-            "{}: from frame {from} the seeked decode differs by {worst}",
-            path.display()
-        );
+        if worst > tolerance {
+            let at = got
+                .iter()
+                .zip(want)
+                .position(|(g, w)| (g - w).abs() == worst)
+                .map_or(from, |index| from + index as u64 / 2);
+            failures.push(format!(
+                "from frame {from} the seeked decode differs by {worst} at frame {at}"
+            ));
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "{}: {}",
+        path.display(),
+        failures.join("; ")
+    );
 }
 
 #[test]
@@ -365,6 +377,454 @@ fn a_seeked_decode_matches_the_full_decode_on_flac() {
 fn a_seeked_decode_matches_the_full_decode_on_aac() {
     let path = test_file("aac.mp4", CHIRP, &["-c:a", "aac"], true);
     assert_seek_matches_full_decode(&path, 1e-4);
+}
+
+#[test]
+fn a_seeked_decode_matches_full_decode_with_slow_aac_timestamp_drift() {
+    let source = test_file("drift-source.mp4", CHIRP, &["-c:a", "aac"], false);
+    let path = source.with_file_name("drifted.mp4");
+    crate::test_support::ffmpeg(
+        &[
+            "-itsscale",
+            "1.001",
+            "-i",
+            source.to_str().unwrap(),
+            "-c",
+            "copy",
+        ],
+        &path,
+    );
+    assert_seeks_match_full_decode(&path, 1e-4, &[48_000 * 7 + 123]);
+}
+
+#[test]
+fn clean_native_rate_pcm_preserves_the_original_decoded_samples() {
+    let path = test_file("clock-clean.wav", NOISE, &["-c:a", "pcm_f32le"], false);
+    let raw = path.with_extension("f32le");
+    crate::test_support::ffmpeg(&["-i", path.to_str().unwrap(), "-f", "f32le"], &raw);
+    let expected: Vec<f32> = std::fs::read(raw)
+        .unwrap()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
+        .collect();
+    let decoded = decode_audio_track(&path, 0).unwrap().unwrap();
+    assert!(
+        decoded
+            .samples
+            .iter()
+            .chain(expected.iter())
+            .all(|sample| sample.is_finite())
+    );
+    assert_eq!(decoded.samples.len(), expected.len());
+    let worst = decoded
+        .samples
+        .iter()
+        .zip(expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(worst <= f32::EPSILON, "clean PCM changed by {worst}");
+}
+
+fn assert_drifted_aac_alignment(rate: u32, scale: f64) {
+    let source = test_file(
+        &format!("clock-{rate}-{scale}-source.mp4"),
+        &chirp_at(rate),
+        &["-c:a", "aac"],
+        false,
+    );
+    let path = source.with_file_name(format!("clock-{rate}-{scale}.mp4"));
+    crate::test_support::ffmpeg(
+        &[
+            "-itsscale",
+            &scale.to_string(),
+            "-i",
+            source.to_str().unwrap(),
+            "-c",
+            "copy",
+        ],
+        &path,
+    );
+    assert_seeks_match_full_decode(
+        &path,
+        1e-4,
+        &[48_000 * 7 + 123, 48_000 * 13 + 7, 48_000 * 18 + 5],
+    );
+}
+
+#[test]
+fn drifted_aac_48k_slow_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(48_000, 1.001);
+}
+
+#[test]
+fn drifted_aac_48k_fast_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(48_000, 0.999);
+}
+
+#[test]
+fn drifted_aac_44k_slow_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(44_100, 1.001);
+}
+
+#[test]
+fn drifted_aac_44k_fast_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(44_100, 0.999);
+}
+
+#[test]
+fn drifted_aac_48k_small_clock_error_matches_full_decode() {
+    assert_drifted_aac_alignment(48_000, 1.0001);
+}
+
+#[test]
+fn drifted_aac_44k_small_clock_error_matches_full_decode() {
+    assert_drifted_aac_alignment(44_100, 1.0001);
+}
+
+#[test]
+fn drifted_aac_48k_small_fast_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(48_000, 0.9999);
+}
+
+#[test]
+fn drifted_aac_44k_small_fast_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(44_100, 0.9999);
+}
+
+#[test]
+fn drifted_aac_48k_ten_ppm_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(48_000, 1.00001);
+}
+
+#[test]
+fn drifted_aac_44k_one_ppm_clock_matches_full_decode() {
+    assert_drifted_aac_alignment(44_100, 1.000001);
+}
+
+fn assert_random_timestamp_jitter_preserves_audio(rate: u32) {
+    let source = test_file(
+        &format!("random-clock-source-{rate}.mp4"),
+        &chirp_at(rate),
+        &["-c:a", "aac"],
+        false,
+    );
+    let path = source.with_file_name(format!("random-clock-{rate}.mp4"));
+    let noise = "if(gte(N,2),floor(3*mod(abs(sin(N*12.9898)*43758.5453),1))-1,0)";
+    let timestamps = format!("setts=pts='PTS+{noise}':dts='DTS+{noise}'");
+    crate::test_support::ffmpeg(
+        &[
+            "-i",
+            source.to_str().unwrap(),
+            "-c",
+            "copy",
+            "-bsf:a",
+            &timestamps,
+        ],
+        &path,
+    );
+    let clean = placed_full_decode(&source);
+    let noisy = placed_full_decode(&path);
+    assert!(
+        clean
+            .iter()
+            .chain(noisy.iter())
+            .all(|sample| sample.is_finite())
+    );
+    assert_eq!(clean.len(), noisy.len());
+    let worst = clean
+        .iter()
+        .zip(noisy)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst <= f32::EPSILON,
+        "random {rate}-Hz timestamp jitter changed samples by {worst}"
+    );
+    assert_seek_matches_full_decode(&path, 1e-4);
+}
+
+#[test]
+fn random_timestamp_jitter_preserves_48k_audio() {
+    assert_random_timestamp_jitter_preserves_audio(48_000);
+}
+
+#[test]
+fn random_timestamp_jitter_preserves_44k_audio() {
+    assert_random_timestamp_jitter_preserves_audio(44_100);
+}
+
+fn assert_coarse_timestamp_drift(codec: &str, name: &str) {
+    let source = test_file(
+        &format!("coarse-{name}-source.mkv"),
+        CHIRP,
+        &["-c:a", codec],
+        false,
+    );
+    let path = source.with_file_name(format!("coarse-{name}-drift.mkv"));
+    crate::test_support::ffmpeg(
+        &[
+            "-itsscale",
+            "1.001",
+            "-i",
+            source.to_str().unwrap(),
+            "-c",
+            "copy",
+        ],
+        &path,
+    );
+    assert_seeks_match_full_decode(
+        &path,
+        1e-4,
+        &[48_000 * 7 + 123, 48_000 * 13 + 7, 48_000 * 18 + 5],
+    );
+}
+
+#[test]
+fn coarse_aac_clock_drift_matches_full_decode() {
+    assert_coarse_timestamp_drift("aac", "aac");
+}
+
+#[test]
+fn coarse_pcm_clock_drift_matches_full_decode() {
+    assert_coarse_timestamp_drift("pcm_s16le", "pcm");
+}
+
+fn assert_drifted_pulse_timing(name: &str, codec: &str) {
+    let source = test_file(
+        &format!("pulse-source-{name}"),
+        "aevalsrc='if(eq(mod(n,48000),0),0.8,0)':duration=20:sample_rate=48000",
+        &["-c:a", codec],
+        false,
+    );
+    let path = source.with_file_name(format!("pulse-drift-{name}"));
+    crate::test_support::ffmpeg(
+        &[
+            "-itsscale",
+            "1.001",
+            "-i",
+            source.to_str().unwrap(),
+            "-c",
+            "copy",
+        ],
+        &path,
+    );
+    let decoded = placed_full_decode(&path);
+    assert!(
+        decoded.iter().all(|sample| sample.is_finite()),
+        "drift inserted a gap"
+    );
+    for second in 1..19 {
+        let expected = (second as f64 * 48_000.0 * 1.001).round() as usize;
+        let radius = 2400;
+        let peak = (expected - radius..expected + radius)
+            .max_by(|&a, &b| decoded[a * 2].abs().total_cmp(&decoded[b * 2].abs()))
+            .unwrap();
+        assert!(
+            decoded[peak * 2].abs() > 0.1,
+            "missing pulse at second {second}"
+        );
+        assert!(
+            peak.abs_diff(expected) <= 240,
+            "pulse {second} at {peak}, expected {expected} within 5 ms"
+        );
+    }
+}
+
+#[test]
+fn fine_aac_drift_follows_the_recorded_clock_without_gaps() {
+    assert_drifted_pulse_timing("aac.mp4", "aac");
+}
+
+#[test]
+fn coarse_pcm_drift_follows_the_recorded_clock_without_gaps() {
+    assert_drifted_pulse_timing("pcm.mkv", "pcm_s16le");
+}
+
+fn assert_clean_coarse_pcm_matches_reference(rate: u32) {
+    let path = test_file(
+        &format!("clean-coarse-{rate}.mkv"),
+        &chirp_at(rate),
+        &["-c:a", "pcm_s16le"],
+        false,
+    );
+    let raw = path.with_extension("f32le");
+    crate::test_support::ffmpeg(&["-i", path.to_str().unwrap(), "-f", "f32le"], &raw);
+    let expected: Vec<f32> = std::fs::read(raw)
+        .unwrap()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
+        .collect();
+    let decoded = decode_audio_track(&path, 0).unwrap().unwrap();
+    assert_eq!(decoded.samples.len(), expected.len());
+    assert!(
+        decoded
+            .samples
+            .iter()
+            .zip(expected)
+            .all(|(a, b)| a.is_finite() && *a == b),
+        "clean coarse-clock PCM must not be compensated"
+    );
+}
+
+#[test]
+fn clean_coarse_48k_pcm_preserves_reference_samples() {
+    assert_clean_coarse_pcm_matches_reference(48_000);
+}
+
+#[test]
+fn clean_coarse_44k_pcm_preserves_reference_samples() {
+    assert_clean_coarse_pcm_matches_reference(44_100);
+}
+
+#[test]
+fn coarse_clock_preroll_delivers_the_first_chunk_near_the_request() {
+    let path = test_file(
+        "near-coarse.mkv",
+        &chirp_at(44_100),
+        &["-c:a", "pcm_s16le"],
+        false,
+    );
+    let from = 48_000 * 13;
+    let mut first = None;
+    decode_audio_streams_from(&path, &[0], 48_000, from, |_, _, at, _| {
+        first = Some(at);
+        ControlFlow::Break(())
+    })
+    .unwrap();
+    let first = first.unwrap();
+    assert!(
+        first <= from && from - first <= 48_000,
+        "first chunk at {first}"
+    );
+}
+
+#[test]
+fn indexed_aac_keeps_a_real_timestamp_gap() {
+    let path = test_file(
+        "indexed-gap.mp4",
+        CHIRP,
+        &["-af", "asetpts='if(gte(T,5),PTS+SR,PTS)'", "-c:a", "aac"],
+        false,
+    );
+    let full = placed_full_decode(&path);
+    let missing = full
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter(|frame| frame[0].is_nan())
+        .count();
+    assert!(
+        (47_000..49_000).contains(&missing),
+        "{missing} missing frames"
+    );
+    assert_seeks_match_full_decode(
+        &path,
+        1e-4,
+        &[48_000 * 3, 48_000 * 6 + 600, 48_000 * 13 + 7],
+    );
+}
+
+#[test]
+fn aac_clock_drift_starting_mid_file_matches_full_decode() {
+    let source = test_file("late-clock-source.mp4", CHIRP, &["-c:a", "aac"], false);
+    let path = source.with_file_name("late-clock.mp4");
+    let timestamps = "setts=pts='PTS+max(PTS-384000,0)/1000':dts='DTS+max(DTS-384000,0)/1000'";
+    crate::test_support::ffmpeg(
+        &[
+            "-i",
+            source.to_str().unwrap(),
+            "-c",
+            "copy",
+            "-bsf:a",
+            timestamps,
+        ],
+        &path,
+    );
+    assert_seeks_match_full_decode(
+        &path,
+        1e-4,
+        &[48_000 * 7 + 123, 48_000 * 13 + 7, 48_000 * 18 + 5],
+    );
+}
+
+#[test]
+fn clean_mpeg_ts_aac_preserves_reference_decoded_samples() {
+    let path = test_file("clock-clean.ts", &chirp_at(44_100), &["-c:a", "aac"], false);
+    let raw = path.with_extension("f32le");
+    crate::test_support::ffmpeg(&["-i", path.to_str().unwrap(), "-f", "f32le"], &raw);
+    let expected: Vec<f32> = std::fs::read(raw)
+        .unwrap()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
+        .collect();
+    let decoded = decode_audio_track(&path, 0).unwrap().unwrap();
+    assert!(
+        decoded
+            .samples
+            .iter()
+            .chain(expected.iter())
+            .all(|sample| sample.is_finite())
+    );
+    assert_eq!(decoded.samples.len(), expected.len());
+    let worst = decoded
+        .samples
+        .iter()
+        .zip(expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst <= f32::EPSILON,
+        "clean MPEG-TS audio changed by {worst}"
+    );
+}
+
+#[test]
+fn fine_timestamp_jitter_does_not_change_full_decoded_audio() {
+    for rate in [48_000, 44_100] {
+        let source = test_file(
+            &format!("clock-jitter-source-{rate}.mp4"),
+            &chirp_at(rate),
+            &["-c:a", "aac"],
+            false,
+        );
+        let path = source.with_file_name(format!("clock-jitter-{rate}.mp4"));
+        let jitter = "setts=pts='PTS+if(gte(N,2),if(mod(N,2),1,-1),0)':dts='DTS+if(gte(N,2),if(mod(N,2),1,-1),0)'";
+        crate::test_support::ffmpeg(
+            &[
+                "-i",
+                source.to_str().unwrap(),
+                "-c",
+                "copy",
+                "-bsf:a",
+                jitter,
+            ],
+            &path,
+        );
+        let clean = placed_full_decode(&source);
+        let noisy = placed_full_decode(&path);
+        assert!(
+            clean
+                .iter()
+                .chain(noisy.iter())
+                .all(|sample| sample.is_finite())
+        );
+        assert_eq!(clean.len(), noisy.len());
+        let worst = clean
+            .iter()
+            .zip(noisy)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst <= f32::EPSILON,
+            "jitter changed {rate}-Hz audio by {worst}"
+        );
+    }
 }
 
 #[test]
