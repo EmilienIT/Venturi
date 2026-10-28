@@ -240,7 +240,7 @@ fn the_render_holds_only_the_audio_near_where_it_is() {
             .readers
             .iter()
             .flat_map(|r| &r.kept)
-            .map(|kept| kept.blocks.iter().map(|b| b.len()).sum::<usize>() + kept.filling.len())
+            .map(KeptStream::held_samples)
             .sum();
         assert!(held <= bound, "{held} samples held at {chunk:?}");
         assert!(audio.readers.len() <= 1);
@@ -822,11 +822,7 @@ fn a_decode_thread_gone_without_an_end_fails_the_render() {
         path: PathBuf::from("gone.wav"),
         streams: vec![0],
         decoded,
-        kept: vec![KeptStream {
-            first: 0,
-            blocks: VecDeque::new(),
-            filling: new_block(),
-        }],
+        kept: vec![KeptStream::new(0, PROJECT_CHANNELS)],
         ended: false,
         read_from: vec![None],
         used: false,
