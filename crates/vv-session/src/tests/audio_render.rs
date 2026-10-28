@@ -2160,6 +2160,46 @@ fn a_level_read_back_is_the_last_one_the_prune_drops() {
 }
 
 #[test]
+fn a_read_only_level_remains_readable_when_recency_cannot_be_updated() {
+    struct Fixture {
+        root: PathBuf,
+        permissions: Option<(PathBuf, std::fs::Permissions)>,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if let Some((path, permissions)) = &self.permissions {
+                let _ = std::fs::set_permissions(path, permissions.clone());
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    let root =
+        std::env::temp_dir().join(format!("vv-session-readonly-level-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let mut fixture = Fixture {
+        root,
+        permissions: None,
+    };
+    let source = fixture.root.join("a.wav");
+    std::fs::write(&source, b"source").unwrap();
+    let source = stamp(&source).unwrap();
+    let mut cache = LevelCache {
+        dir: Some(fixture.root.join("levels")),
+        ..Default::default()
+    };
+    let part = LevelParts::Peak(0.5);
+    cache.put(1, &part, Some(std::slice::from_ref(&source)), false);
+    let path = cache.path(1).unwrap();
+    let permissions = std::fs::metadata(&path).unwrap().permissions();
+    fixture.permissions = Some((path.clone(), permissions.clone()));
+    let mut read_only = permissions;
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&path, read_only).unwrap();
+    forget(&mut cache.shared.state.lock().unwrap(), 1);
+    assert_eq!(cache.get(1), Some(part));
+}
+
+#[test]
 fn a_level_gone_before_the_read_back_is_measured_again() {
     // Another process' start-up prune can take a `.level` file between the
     // claim and the read back, and the measure that produced it is over.

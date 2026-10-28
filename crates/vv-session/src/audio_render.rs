@@ -647,7 +647,14 @@ impl LevelCache {
             forget(state, key);
         }
         let mut bytes = Vec::new();
-        let mut file = std::fs::File::open(self.path(key)?).ok()?;
+        let path = self.path(key)?;
+        // Windows needs a writable handle to refresh the modification time.
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .or_else(|_| std::fs::File::open(&path))
+            .ok()?;
         file.read_to_end(&mut bytes).ok()?;
         // A read keeps the file: the prune drops the oldest by modification
         // time, and a level read back is worth more than one written later and
