@@ -118,6 +118,20 @@ fn save_then_load_keeps_custom_panel_layout_and_defaults_it_when_absent() {
         .join("settings.json");
     let mut settings = Settings::default();
     settings.panels = PanelLayout {
+        floating_windows: [
+            crate::panel_window::Placement {
+                detached: true,
+                size: [720.0, 340.0],
+            },
+            crate::panel_window::Placement {
+                detached: false,
+                size: [420.0, 480.0],
+            },
+            crate::panel_window::Placement {
+                detached: true,
+                size: [760.0, 640.0],
+            },
+        ],
         media_pool_open: false,
         effects_open: true,
         inspector_open: false,
