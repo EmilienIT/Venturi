@@ -1,4 +1,95 @@
 use super::*;
+
+#[test]
+fn backward_seek_rebuilds_fallback_before_its_cached_window() {
+    let path = PathBuf::from("backward-fallback.wav");
+    let (project, timeline) = pitch_corrected_file_project(&path, 30);
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(8 * MONO_BLOCK_BYTES);
+    cache.poll();
+    let playhead = 10 * BLOCK_FRAMES;
+    cache.set_playhead(playhead);
+    cache.begin_pass();
+    for index in 18..23 {
+        cache
+            .streams
+            .entry((path.clone(), 0))
+            .or_default()
+            .blocks
+            .insert(index, Arc::new(vec![0.5; BLOCK_FRAMES as usize]));
+    }
+    let snapshot = MixSnapshot::from_timeline(&project, &timeline, 48_000, 1, &mut cache);
+    cache.sweep_unused();
+    assert!(!cache.over_budget);
+    let mut output = vec![0.0; 128];
+    vv_audio::mixer::mix_range(&snapshot, playhead, &mut output);
+    assert!(output.iter().all(|&sample| sample > 0.4));
+    cache.set_playhead(playhead - 10);
+    assert!(
+        !cache.poll(),
+        "a move inside the cached window must reuse it"
+    );
+    let backward = 8 * BLOCK_FRAMES;
+    vv_audio::mixer::mix_range(&snapshot, backward, &mut output);
+    assert!(output.iter().all(|&sample| sample == 0.5));
+    cache.set_playhead(backward);
+    assert!(cache.poll(), "backward seek needs a new fallback snapshot");
+    cache.begin_pass();
+    cache
+        .streams
+        .get_mut(&(path.clone(), 0))
+        .unwrap()
+        .blocks
+        .insert(16, Arc::new(vec![0.75; BLOCK_FRAMES as usize]));
+    let snapshot = MixSnapshot::from_timeline(&project, &timeline, 48_000, 1, &mut cache);
+    vv_audio::mixer::mix_range(&snapshot, backward, &mut output);
+    assert!(output.iter().all(|&sample| sample > 0.7));
+}
+
+#[test]
+fn overlapping_fallbacks_refresh_when_only_one_window_is_left() {
+    let project = Project::default();
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(16 * MONO_BLOCK_BYTES);
+    cache.poll();
+    let playhead = 10 * BLOCK_FRAMES;
+    cache.set_playhead(playhead);
+    cache.begin_pass();
+    for (key, tempo, name) in [(1, 2.0, "narrow.wav"), (2, 0.5, "wide.wav")] {
+        let path = PathBuf::from(name);
+        let center = (playhead as f64 * tempo) as u64 / BLOCK_FRAMES;
+        for index in center - 2..center + 3 {
+            cache
+                .streams
+                .entry((path.clone(), 0))
+                .or_default()
+                .blocks
+                .insert(index, Arc::new(vec![0.5; BLOCK_FRAMES as usize]));
+        }
+        assert!(matches!(
+            cache.stretched(StretchRequest {
+                project: &project,
+                input: vv_audio::StretchInput::File {
+                    path: &path,
+                    stream: 0
+                },
+                frames: 0..120 * SEC,
+                plays: 0..(120.0 * SEC as f64 / tempo) as u64,
+                tempo,
+                sample_rate: 48_000,
+                channels: 1,
+                key,
+            }),
+            ClipAudio::Partial(_)
+        ));
+    }
+    cache.sweep_unused();
+    cache.set_playhead(9 * BLOCK_FRAMES);
+    assert!(
+        cache.poll(),
+        "the wider window must not hide the narrower window's missing coverage"
+    );
+}
 use vv_audio::MixSnapshot;
 use vv_core::{MediaId, Project};
 

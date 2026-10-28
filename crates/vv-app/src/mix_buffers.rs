@@ -276,6 +276,7 @@ fn play_frame_for_source(request: &StretchRequest<'_>, frame: u64, scale: f64) -
 /// The bounded source read and its next playhead-driven refresh point.
 struct StretchFallbackWindow {
     frames: Range<u64>,
+    plays: Range<u64>,
     refresh_at: Option<u64>,
 }
 
@@ -285,6 +286,7 @@ fn stretch_fallback_window(request: &StretchRequest<'_>, playhead: u64) -> Stret
     if frames.is_empty() {
         return StretchFallbackWindow {
             frames: frames.clone(),
+            plays: 0..0,
             refresh_at: None,
         };
     }
@@ -307,6 +309,7 @@ fn stretch_fallback_window(request: &StretchRequest<'_>, playhead: u64) -> Stret
     });
     StretchFallbackWindow {
         frames: start..end,
+        plays: plays_start..plays_end,
         refresh_at,
     }
 }
@@ -390,6 +393,7 @@ pub struct MixBufferCache {
     unplanned: bool,
     /// The active varispeed fallback window must be rebuilt from a new position.
     fallback_refresh_at: Option<u64>,
+    fallback_windows: Vec<(Range<u64>, Range<u64>)>,
     fallback_refresh_pending: bool,
     /// The last `rebalance` left blocks out, and where the playhead was.
     over_budget: bool,
@@ -594,6 +598,7 @@ impl MixBufferCache {
             projected_bytes: None,
             unplanned: false,
             fallback_refresh_at: None,
+            fallback_windows: Vec::new(),
             fallback_refresh_pending: false,
             over_budget: false,
             rebalanced_at: 0,
@@ -636,7 +641,12 @@ impl MixBufferCache {
     /// Where the mix plays now, in samples of what is mixed.
     pub fn set_playhead(&mut self, sample: u64) {
         self.playhead.store(sample, Ordering::Relaxed);
-        if self.fallback_refresh_at.is_some_and(|at| sample >= at) {
+        if self.fallback_refresh_at.is_some_and(|at| sample >= at)
+            || self
+                .fallback_windows
+                .iter()
+                .any(|(plays, covered)| plays.contains(&sample) && !covered.contains(&sample))
+        {
             self.fallback_refresh_pending = true;
             self.unplanned = true;
         }
@@ -663,6 +673,7 @@ impl MixBufferCache {
         self.projected_bytes = None;
         self.media_pass = media_pass;
         self.fallback_refresh_at = None;
+        self.fallback_windows.clear();
         if let (false, Some(plugins)) = (media_pass, &mut self.plugins) {
             plugins.begin_pass();
         }
@@ -860,6 +871,10 @@ impl MixBufferCache {
     /// Reads a small source window at varispeed when the full stretch cannot fit.
     fn stretch_fallback(&mut self, request: StretchRequest<'_>) -> ClipAudio {
         let window = stretch_fallback_window(&request, self.playhead.load(Ordering::Relaxed));
+        if !window.frames.is_empty() {
+            self.fallback_windows
+                .push((request.plays.clone(), window.plays.clone()));
+        }
         if let Some(refresh_at) = window.refresh_at {
             self.fallback_refresh_at = Some(
                 self.fallback_refresh_at
