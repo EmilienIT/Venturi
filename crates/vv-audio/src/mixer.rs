@@ -898,10 +898,7 @@ fn collect_clips(
             let nested_placement = placement + span.start as i64 - span.source_offset as i64;
             let input = if pitch_corrected {
                 let nested = item.compound.and_then(|id| project.timelines.get(id));
-                let is_cycle = item
-                    .compound
-                    .is_some_and(|id| nested_timeline_reaches_itself(project, id, sample_rate));
-                if is_cycle || (nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH) {
+                if nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH {
                     cyclic = true;
                     continue;
                 }
@@ -915,6 +912,18 @@ fn collect_clips(
                     if frames.is_empty() {
                         continue;
                     }
+                }
+                if item.compound.is_some_and(|id| {
+                    nested_timeline_reaches_itself(
+                        project,
+                        id,
+                        sample_rate,
+                        frames.clone(),
+                        depth + 1,
+                    )
+                }) {
+                    cyclic = true;
+                    continue;
                 }
                 let (input, content) = match nested {
                     Some(timeline) => (
@@ -1204,13 +1213,24 @@ fn normalize_gain(target_db: f32, reading: LevelReading) -> Option<f32> {
 
 /// `true` if `start` reaches itself through the compound clips `collect_clips`
 /// mixes: caught before a stretch is requested for each depth of the cycle.
-fn nested_timeline_reaches_itself(project: &Project, start: TimelineId, sample_rate: u32) -> bool {
-    let mut visited = std::collections::HashSet::new();
-    let mut stack = vec![start];
-    while let Some(current) = stack.pop() {
-        if !visited.insert(current) {
+fn nested_timeline_reaches_itself(
+    project: &Project,
+    start: TimelineId,
+    sample_rate: u32,
+    frames: std::ops::Range<u64>,
+    depth: u32,
+) -> bool {
+    let mut visited = std::collections::HashMap::new();
+    let mut stack = vec![(start, frames, depth)];
+    while let Some((current, frames, depth)) = stack.pop() {
+        if depth >= vv_core::MAX_COMPOUND_DEPTH {
             continue;
         }
+        let key = (current, frames.start, frames.end);
+        if visited.get(&key).is_some_and(|&seen| seen <= depth) {
+            continue;
+        }
+        visited.insert(key, depth);
         let Some(timeline) = project.timelines.get(current) else {
             continue;
         };
@@ -1224,19 +1244,18 @@ fn nested_timeline_reaches_itself(project: &Project, start: TimelineId, sample_r
                 let ClipSource::Media(id) = &clip.source else {
                     continue;
                 };
-                if ClipSpan::new(clip, fps, sample_rate)
-                    .media_frames(None)
-                    .is_none()
-                {
+                let Some(needed) =
+                    ClipSpan::new(clip, fps, sample_rate).media_frames(Some(&frames))
+                else {
                     continue;
-                }
+                };
                 let Some(nested) = project.media_pool.get(*id).and_then(|m| m.compound) else {
                     continue;
                 };
                 if nested == start {
                     return true;
                 }
-                stack.push(nested);
+                stack.push((nested, needed, depth + 1));
             }
         }
     }

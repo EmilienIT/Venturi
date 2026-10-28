@@ -1,4 +1,72 @@
 use super::*;
+
+#[test]
+fn compound_references_outside_the_stretch_range_do_not_silence_audio() {
+    for at in [10, 20] {
+        let (mut project, compound) = project_with_compound();
+        let nested = project.media_pool[compound].compound.unwrap();
+        project.timelines[nested]
+            .tracks
+            .push(audio_track(vec![clip_at(compound, at, 0, 5)]));
+        let mut clip = sped_up_clip(compound, Rational::new(2, 1), 5);
+        clip.source_offset = 0;
+        clip.pitch_correction = true;
+        let tl = timeline(vec![audio_track(vec![clip])]);
+        let mut source = FakeStretch {
+            ready: true,
+            ..Default::default()
+        };
+        let snapshot = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        assert_eq!(
+            source.asked.len(),
+            1,
+            "a reference at {at} is outside the requested input"
+        );
+        let mut output = vec![0.0; 40];
+        mix_range(&snapshot, 0, &mut output);
+        assert!(output.iter().all(|&sample| sample > 0.8));
+    }
+}
+
+#[test]
+fn compound_cycle_ranges_follow_nested_source_offsets() {
+    for inside in [false, true] {
+        let (mut project, compound) = project_with_compound();
+        let nested = project.media_pool[compound].compound.unwrap();
+        let audio = project
+            .media_pool
+            .iter()
+            .find(|(_, item)| item.path == Path::new("a.wav"))
+            .unwrap()
+            .0;
+        let inner = project.timelines.insert(timeline(vec![audio_track(vec![
+            clip_at(compound, if inside { 20 } else { 0 }, 0, 5),
+            clip_at(audio, 20, 0, 5),
+        ])]));
+        let inner_media = project.media_pool.insert(MediaItem {
+            compound: Some(inner),
+            content_hash: 80,
+            ..project.media_pool[compound].clone()
+        });
+        project.timelines[nested]
+            .tracks
+            .push(audio_track(vec![clip_at(inner_media, 5, 20, 5)]));
+        let mut clip = sped_up_clip(compound, Rational::new(2, 1), 5);
+        clip.source_offset = 0;
+        clip.pitch_correction = true;
+        let tl = timeline(vec![audio_track(vec![clip])]);
+        let mut source = FakeStretch {
+            ready: true,
+            ..Default::default()
+        };
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        assert_eq!(
+            source.asked.is_empty(),
+            inside,
+            "nested cycle inside requested range: {inside}"
+        );
+    }
+}
 use std::path::PathBuf;
 use vv_core::{Clip, ClipId, Interpolation, MediaItem, MediaMeta, Rational, Track, TrackKind};
 
