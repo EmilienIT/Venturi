@@ -252,6 +252,29 @@ struct SeekTestFile {
     path: std::path::PathBuf,
 }
 
+impl SeekTestFile {
+    fn new(name: &str) -> Self {
+        Self::with_sequence(name, "vv-media-seek-test", &SEEK_TEST_DIR_SEQ)
+    }
+
+    fn with_sequence(name: &str, prefix: &str, sequence: &std::sync::atomic::AtomicUsize) -> Self {
+        loop {
+            let seq = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("{prefix}-{}-{seq}", std::process::id()));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => {
+                    return Self {
+                        path: dir.join(name),
+                        dir,
+                    };
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create seek fixture directory: {error}"),
+            }
+        }
+    }
+}
+
 impl std::ops::Deref for SeekTestFile {
     type Target = std::path::Path;
 
@@ -266,15 +289,41 @@ impl Drop for SeekTestFile {
     }
 }
 
+#[test]
+fn a_seek_fixture_directory_is_removed_during_unwind() {
+    let fixture = SeekTestFile::new("sample");
+    let dir = fixture.dir.clone();
+    let result = std::panic::catch_unwind({
+        move || {
+            std::fs::write(&fixture.path, b"fixture").unwrap();
+            panic!("fixture lifetime control");
+        }
+    });
+    assert!(result.is_err());
+    assert!(!dir.exists());
+}
+
+#[test]
+fn a_seek_fixture_preserves_stale_candidates() {
+    let root = SeekTestFile::new("root");
+    let prefix = root.dir.join("candidate").display().to_string();
+    let stale = std::path::PathBuf::from(format!("{prefix}-{}-0", std::process::id()));
+    std::fs::create_dir(&stale).unwrap();
+    std::fs::write(stale.join("keep"), b"previous run").unwrap();
+    let sequence = std::sync::atomic::AtomicUsize::new(0);
+    let first = SeekTestFile::with_sequence("a", &prefix, &sequence);
+    let second = SeekTestFile::with_sequence("b", &prefix, &sequence);
+    assert_ne!(first.dir, stale);
+    assert_ne!(first.dir, second.dir);
+    let owned = first.dir.clone();
+    drop(first);
+    assert!(!owned.exists());
+    assert!(second.dir.is_dir());
+    assert_eq!(std::fs::read(stale.join("keep")).unwrap(), b"previous run");
+}
+
 fn test_file(name: &str, source: &str, output_args: &[&str], with_video: bool) -> SeekTestFile {
-    let seq = SEEK_TEST_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("vv-media-seek-test-{}-{seq}", std::process::id()));
-    // The guard exists before the directory does, so a failing ffmpeg still cleans up.
-    let file = SeekTestFile {
-        path: dir.join(name),
-        dir,
-    };
-    std::fs::create_dir_all(&file.dir).unwrap();
+    let file = SeekTestFile::new(name);
     let mut args = vec!["-f", "lavfi", "-i", source];
     if with_video {
         args.extend([
