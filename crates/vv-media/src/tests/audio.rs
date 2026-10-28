@@ -555,10 +555,10 @@ fn random_timestamp_jitter_preserves_44k_audio() {
     assert_random_timestamp_jitter_preserves_audio(44_100);
 }
 
-fn assert_coarse_timestamp_drift(codec: &str, name: &str) {
+fn assert_coarse_timestamp_drift(codec: &str, name: &str, rate: u32) {
     let source = test_file(
         &format!("coarse-{name}-source.mkv"),
-        CHIRP,
+        &chirp_at(rate),
         &["-c:a", codec],
         false,
     );
@@ -583,12 +583,22 @@ fn assert_coarse_timestamp_drift(codec: &str, name: &str) {
 
 #[test]
 fn coarse_aac_clock_drift_matches_full_decode() {
-    assert_coarse_timestamp_drift("aac", "aac");
+    assert_coarse_timestamp_drift("aac", "aac", 48_000);
 }
 
 #[test]
 fn coarse_pcm_clock_drift_matches_full_decode() {
-    assert_coarse_timestamp_drift("pcm_s16le", "pcm");
+    assert_coarse_timestamp_drift("pcm_s16le", "pcm", 48_000);
+}
+
+#[test]
+fn coarse_resampled_aac_clock_drift_matches_full_decode() {
+    assert_coarse_timestamp_drift("aac", "aac44", 44_100);
+}
+
+#[test]
+fn coarse_resampled_pcm_clock_drift_matches_full_decode() {
+    assert_coarse_timestamp_drift("pcm_s16le", "pcm44", 44_100);
 }
 
 fn assert_drifted_pulse_timing(name: &str, codec: &str) {
