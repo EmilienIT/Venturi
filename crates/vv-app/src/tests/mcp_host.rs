@@ -270,8 +270,7 @@ fn screenshot_answers_with_the_next_drawn_frame() {
 
 #[test]
 fn an_agent_export_shows_in_the_progress_window() {
-    let dir = std::env::temp_dir().join("vv-app-mcp-export");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ExportDirectory::new();
     let (mut app, handle, ctx) = attached();
     let (timeline, _) = solid_clip(&mut app);
 
@@ -281,7 +280,7 @@ fn an_agent_export_shows_in_the_progress_window() {
         &ctx,
         ToolCall::Export(vv_mcp::ExportArgs {
             timeline_id: timeline_id_string(timeline),
-            path: dir.join("out.mp4").display().to_string(),
+            path: dir.0.join("out.mp4").display().to_string(),
             range: Some([0, 5]),
             scale_percent: Some(10),
             audio: false,
@@ -310,7 +309,48 @@ fn an_agent_export_shows_in_the_progress_window() {
     assert_eq!(displayed_job, Some(job));
     result.unwrap();
     assert!(!app.session.is_exporting());
-    let _ = std::fs::remove_dir_all(dir);
+}
+
+struct ExportDirectory(std::path::PathBuf);
+
+impl ExportDirectory {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("vv-app-mcp-export-{}-{id}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create export fixture: {error}"),
+            }
+        }
+    }
+}
+
+impl Drop for ExportDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn export_fixtures_are_isolated_and_cleaned_when_a_test_unwinds() {
+    let first = ExportDirectory::new();
+    let second = ExportDirectory::new();
+    let path = first.0.clone();
+    assert_ne!(path, second.0);
+    assert!(
+        std::panic::catch_unwind(move || {
+            let first = first;
+            std::fs::write(first.0.join("partial.mp4"), b"unfinished export").unwrap();
+            panic!("simulated assertion failure");
+        })
+        .is_err()
+    );
+    assert!(!path.exists());
+    assert!(second.0.is_dir());
 }
 
 #[test]
