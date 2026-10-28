@@ -22,6 +22,28 @@ fn chirp(name: &str, rate: u32, secs: u32) -> PathBuf {
     source(name, &["-f", "lavfi", "-i", &lavfi])
 }
 
+#[test]
+fn a_reused_reader_decodes_the_start_of_its_shared_block() {
+    let path = chirp("reader-shared-grid.wav", PROJECT_SAMPLE_RATE, 3);
+    let expected = decoded_whole(&path, 0).unwrap();
+    let mut reader = Reader::open(path.clone(), vec![0], 60_000);
+    reader.read(0, 60_000..60_128).unwrap();
+    let earlier = 4096..4352;
+    assert!(reader.serves(&path, 0, earlier.start));
+    let actual = reader
+        .read(0, earlier.clone())
+        .unwrap()
+        .to_vec(earlier.clone());
+    let expected = expected.to_vec(earlier);
+    assert_eq!(actual.len(), expected.len());
+    let error = actual
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(error < 1e-6, "reused-reader sample error: {error}");
+}
+
 fn media(project: &mut Project, path: PathBuf, sample_rate: u32, audio_streams: u16) -> MediaId {
     project.media_pool.insert(MediaItem {
         path,

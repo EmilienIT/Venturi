@@ -18,8 +18,8 @@ use vv_audio::mixer::{
     remix_channels_into,
 };
 use vv_audio::{
-    LevelAnalysis, LevelReading, LevelSegment, PluginHandle, PluginRequest, SampleBlocks,
-    StretchRequest, Stretcher,
+    BLOCK_FRAMES, LevelAnalysis, LevelReading, LevelSegment, PluginHandle, PluginRequest,
+    SampleBlocks, StretchRequest, Stretcher,
 };
 use vv_core::{Project, Timeline};
 use vv_plugin::Instances;
@@ -31,9 +31,6 @@ const CHUNK_FRAMES: u64 = 1 << 18;
 /// How far ahead of what a reader decoded a window may start and still be
 /// read from it, instead of seeking with a new one.
 const READ_AHEAD_FRAMES: u64 = 10 * PROJECT_SAMPLE_RATE as u64;
-/// Small, unlike the preview's: a window holds the blocks it overlaps,
-/// and an edited timeline reads many short windows.
-const BLOCK_FRAMES: u64 = 1 << 13;
 /// Decoded packets a reader may be ahead of the render.
 const READER_QUEUE: usize = 64;
 /// Rendered before every segment of a measure: the loudness filters settle
