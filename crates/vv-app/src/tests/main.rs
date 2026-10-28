@@ -5574,3 +5574,33 @@ fn a_crash_marker_survives_a_quit_when_no_scan_is_running() {
     assert!(kept);
     assert!(removed);
 }
+
+#[test]
+fn resetting_timeline_marks_restores_the_full_range_and_follows_new_content() {
+    let mut app = VenturiApp::default();
+    make_timeline_with_clip(&mut app, 0, 0, 100);
+    app.timeline_state.playhead = 20;
+    app.mark_at_playhead(true);
+    app.timeline_state.playhead = 59;
+    app.mark_at_playhead(false);
+    app.browse_marks.set_in(7, 40);
+    app.clear_in_and_out();
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (0, 100));
+    make_timeline_with_clip(&mut app, 0, 100, 50);
+    let total = app.session.project.timelines[app.timeline_id.unwrap()].total_frames();
+    assert_eq!(app.timeline_state.export_marks.resolve(total), (0, 150));
+    assert_eq!(app.browse_marks.resolve(40), (7, 40));
+}
+
+#[test]
+fn resetting_preview_marks_preserves_the_timeline_export_range() {
+    let mut app = VenturiApp::default();
+    make_timeline_with_clip(&mut app, 0, 0, 100);
+    app.timeline_state.export_marks.set_in(20, 100);
+    app.browsing = Some(Browsed::Asset("preview".into()));
+    app.browse_marks.set_in(10, 100);
+    app.browse_marks.set_out(29, 100);
+    app.clear_in_and_out();
+    assert_eq!(app.browse_marks.resolve(100), (0, 100));
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (20, 100));
+}
