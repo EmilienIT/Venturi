@@ -1731,6 +1731,7 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.shift(delta);
+            f.shake.phase_origin += delta;
             for track in f.shake.tracks_mut() {
                 track.shift(delta);
             }
@@ -1766,6 +1767,7 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.rescale_times(from, to);
+            f.shake.phase_origin = convert_frames(f.shake.phase_origin, from, to);
             for track in f.shake.tracks_mut() {
                 track.rescale_times(from, to);
             }

@@ -8,6 +8,26 @@ fn at(shake: &CameraShakeTracks, frame: FrameIdx) -> Transform {
 }
 
 #[test]
+fn a_shifted_phase_origin_scales_with_the_frame_rate() {
+    let mut effects = crate::EffectStack::default();
+    effects
+        .filters
+        .push(ClipFilter::new(FilterKind::CameraShake));
+    effects.shift_keyframes(25);
+    let mut before = Transform::default();
+    effects.filters[0]
+        .shake
+        .apply(&mut before, 75, 25.0, (1920, 1080));
+    effects.rescale_keyframe_times(crate::Rational::new(25, 1), crate::Rational::new(50, 1));
+    let mut after = Transform::default();
+    effects.filters[0]
+        .shake
+        .apply(&mut after, 150, 50.0, (1920, 1080));
+    assert_eq!(before, after);
+    assert_eq!(effects.filters[0].shake.phase_origin, 50);
+}
+
+#[test]
 fn the_same_frame_is_identical_after_seeks_and_across_sessions() {
     let shake = CameraShakeTracks::default();
     let expected = at(&shake, 41);
@@ -69,12 +89,12 @@ fn animated_speed_integrates_instead_of_jumping_at_keyframes() {
     let mut speed = Keyframed::constant(1.0);
     speed.upsert(0, 1.0, Interpolation::Linear);
     speed.upsert(100, 3.0, Interpolation::Hold);
-    assert!((speed_phase(&speed, 50.0) - 75.0).abs() < 1e-5);
-    assert!((speed_phase(&speed, 100.0) - 200.0).abs() < 1e-5);
-    assert!((speed_phase(&speed, 101.0) - 203.0).abs() < 1e-5);
+    assert!((speed_phase(&speed, 50.0, 0.0) - 75.0).abs() < 1e-5);
+    assert!((speed_phase(&speed, 100.0, 0.0) - 200.0).abs() < 1e-5);
+    assert!((speed_phase(&speed, 101.0, 0.0) - 203.0).abs() < 1e-5);
     speed.upsert(0, 1.0, Interpolation::Hold);
-    assert!((speed_phase(&speed, 100.0) - 100.0).abs() < 1e-5);
-    assert!((speed_phase(&speed, -25.0) + 25.0).abs() < 1e-5);
+    assert!((speed_phase(&speed, 100.0, 0.0) - 100.0).abs() < 1e-5);
+    assert!((speed_phase(&speed, -25.0, 0.0) + 25.0).abs() < 1e-5);
 }
 
 #[test]

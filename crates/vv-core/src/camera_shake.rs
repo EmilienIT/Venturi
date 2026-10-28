@@ -56,6 +56,8 @@ pub struct CameraShakeTracks {
     params: [Keyframed<f32>; 7],
     pub seed: u32,
     pub auto_zoom: bool,
+    /// Source frame from which speed integration starts.
+    pub phase_origin: FrameIdx,
 }
 
 impl Default for CameraShakeTracks {
@@ -64,6 +66,7 @@ impl Default for CameraShakeTracks {
             params: ShakeParam::ALL.map(|p| Keyframed::constant(p.default_value())),
             seed: 0,
             auto_zoom: true,
+            phase_origin: 0,
         }
     }
 }
@@ -101,7 +104,11 @@ impl CameraShakeTracks {
         if amount == 0.0 {
             return;
         }
-        let phase = speed_phase(self.track(ShakeParam::Speed), frame) / fps;
+        let phase = speed_phase(
+            self.track(ShakeParam::Speed),
+            frame,
+            self.phase_origin as f64,
+        ) / fps;
         let smoothness = value(ShakeParam::Smoothness);
         let noise = |channel: u32| {
             let seed = self.seed.wrapping_add(channel.wrapping_mul(0x9e3779b9));
@@ -240,11 +247,11 @@ fn speed_value(track: &Keyframed<f32>, frame: f64) -> f64 {
     }
 }
 
-fn speed_phase(track: &Keyframed<f32>, frame: f64) -> f64 {
+fn speed_phase(track: &Keyframed<f32>, frame: f64, origin: f64) -> f64 {
     if track.is_constant() {
-        return frame * speed_value(track, 0.0);
+        return (frame - origin) * speed_value(track, origin);
     }
-    let (start, end) = (frame.min(0.0), frame.max(0.0));
+    let (start, end) = (frame.min(origin), frame.max(origin));
     let mut a = start;
     let mut area = 0.0;
     // Integrating speed keeps animated speed changes from jumping in phase.
@@ -269,7 +276,7 @@ fn speed_phase(track: &Keyframed<f32>, frame: f64) -> f64 {
         }
         a = b;
     }
-    if frame < 0.0 { -area } else { area }
+    if frame < origin { -area } else { area }
 }
 
 #[cfg(test)]

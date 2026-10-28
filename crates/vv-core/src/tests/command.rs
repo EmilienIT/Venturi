@@ -1,6 +1,77 @@
 use super::*;
 use crate::{Rational, Timeline, Track};
 
+#[test]
+fn extending_generator_start_preserves_camera_shake_phase_and_undo() {
+    for animated in [false, true] {
+        let (mut project, tl) = project();
+        let id = project.alloc_clip_id();
+        let mut clip = crate::Clip::from_source_range(
+            id,
+            crate::ClipSource::SolidColor,
+            0,
+            100,
+            50,
+            Rational::one(),
+        );
+        let mut filter = crate::ClipFilter::new(FilterKind::CameraShake);
+        if animated {
+            let speed = filter.shake.track_mut(crate::ShakeParam::Speed);
+            speed.upsert(0, 1.0, Interpolation::EaseInOut);
+            speed.upsert(40, 5.0, Interpolation::Linear);
+            speed.upsert(90, 2.0, Interpolation::Linear);
+        }
+        clip.effects.filters.push(filter);
+        project.timelines[tl].tracks[0].clips.push(clip.clone());
+        let mut trim = TrimClip::new(tl, 0, id, TrimEdge::Start, 25);
+        for _ in 0..2 {
+            trim.apply(&mut project);
+            let trimmed = project.timelines[tl].clip(0, id).unwrap();
+            let saved = ron::to_string(&trimmed.effects.filters[0].shake).unwrap();
+            let restored: crate::CameraShakeTracks = ron::from_str(&saved).unwrap();
+            for frame in 50..150 {
+                let mut before = crate::Transform::default();
+                let mut after = before;
+                clip.effects.filters[0].shake.apply(
+                    &mut before,
+                    clip.source_frame_at(frame),
+                    25.0,
+                    (1920, 1080),
+                );
+                restored.apply(
+                    &mut after,
+                    trimmed.source_frame_at(frame),
+                    25.0,
+                    (1920, 1080),
+                );
+                for (a, b) in before
+                    .position
+                    .into_iter()
+                    .chain(before.zoom)
+                    .chain([before.rotation])
+                    .zip(
+                        after
+                            .position
+                            .into_iter()
+                            .chain(after.zoom)
+                            .chain([after.rotation]),
+                    )
+                {
+                    assert!(
+                        (a - b).abs() < 0.0001,
+                        "frame {frame}, animated {animated}: {before:?} != {after:?}"
+                    );
+                }
+            }
+            trim.undo(&mut project);
+            assert_eq!(
+                ron::to_string(project.timelines[tl].clip(0, id).unwrap()).unwrap(),
+                ron::to_string(&clip).unwrap()
+            );
+        }
+    }
+}
+
 fn project() -> (Project, TimelineId) {
     let mut project = Project::default();
     let timeline = project.timelines.insert(Timeline {

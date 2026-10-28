@@ -362,6 +362,7 @@ fn pasted_camera_shake_keeps_settings_and_remaps_animated_controls() {
     let mut source = source_clip();
     let mut filter = vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake);
     filter.shake.seed = 123;
+    filter.shake.phase_origin = 3;
     filter.shake.auto_zoom = false;
     filter
         .shake
@@ -377,6 +378,7 @@ fn pasted_camera_shake_keeps_settings_and_remaps_animated_controls() {
     );
     let shake = &pasted.effects.filters[0].shake;
     assert_eq!(shake.seed, 123);
+    assert_eq!(shake.phase_origin, 103);
     assert!(!shake.auto_zoom);
     assert_eq!(
         shake.track(vv_core::ShakeParam::MotionScale).keyframes()[0].0,

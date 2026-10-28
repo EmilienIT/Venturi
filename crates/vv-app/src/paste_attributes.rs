@@ -569,6 +569,7 @@ fn merge(
                         grow: scaled(&f.grow, size),
                         ..f.clone()
                     };
+                    filter.shake.phase_origin = remap.frame(filter.shake.phase_origin);
                     for track in filter.shake.tracks_mut() {
                         *track = remap.apply(track);
                     }
