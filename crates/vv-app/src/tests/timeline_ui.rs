@@ -3,6 +3,11 @@ use super::*;
 #[test]
 fn a_keyboard_reveal_discards_wheel_smoothing_until_fresh_input() {
     let ctx = egui::Context::default();
+    ctx.options_mut(|options| {
+        options.input_options.horizontal_scroll_modifier = egui::Modifiers::CTRL;
+        options.input_options.vertical_scroll_modifier = egui::Modifiers::ALT;
+        options.input_options.zoom_modifier = egui::Modifiers::SHIFT;
+    });
     let scroll_id = egui::Id::new("keyboard_wheel_smoothing");
     let mut state = TimelineState::default();
     state.pixels_per_sec = 25.0;
@@ -18,12 +23,34 @@ fn a_keyboard_reveal_discards_wheel_smoothing_until_fresh_input() {
         modifiers: egui::Modifiers::NONE,
         phase: egui::TouchPhase::Move,
     };
-    for frame in 0..6 {
+    for frame in 0..9 {
         let mut input = egui::RawInput::default();
         input.screen_rect = Some(panel);
         input.time = Some(frame as f64 / 60.0);
         input.events = match frame {
-            0 | 5 => vec![egui::Event::PointerMoved(panel.center()), wheel()],
+            0 | 7 => vec![egui::Event::PointerMoved(panel.center()), wheel()],
+            2 | 5 | 8 => vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -5.0),
+                modifiers: if frame == 8 {
+                    egui::Modifiers::CTRL
+                } else {
+                    egui::Modifiers::NONE
+                },
+                phase: egui::TouchPhase::Move,
+            }],
+            3 => vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(-5.0, 0.0),
+                modifiers: egui::Modifiers::ALT,
+                phase: egui::TouchPhase::Move,
+            }],
+            4 => vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(-5.0, 0.0),
+                modifiers: egui::Modifiers::SHIFT,
+                phase: egui::TouchPhase::Move,
+            }],
             _ => Vec::new(),
         };
         let mut output = ctx.run_ui(input, |ui| {
@@ -34,6 +61,9 @@ fn a_keyboard_reveal_discards_wheel_smoothing_until_fresh_input() {
                 state.reveal_playhead = true;
                 assert!(ui.input(|i| i.smooth_scroll_delta.x != 0.0));
             }
+            if frame == 2 || frame == 3 || frame == 5 {
+                assert!(ui.input(|i| i.smooth_scroll_delta.y != 0.0));
+            }
             sync_timeline_scroll(
                 &ctx, scroll_id, &mut state, 25.0, 1.0, 200.0, 2000.0, false, panel, true,
             );
@@ -41,7 +71,7 @@ fn a_keyboard_reveal_discards_wheel_smoothing_until_fresh_input() {
                 .unwrap()
                 .offset
                 .x;
-            if frame < 5 {
+            if frame < 7 {
                 assert_eq!(
                     offset, 100.0,
                     "wheel smoothing undid the reveal in frame {frame}"

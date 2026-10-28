@@ -5273,13 +5273,36 @@ fn sync_timeline_scroll(
 
     let max_offset_x = (content_width - viewport_width).max(0.0);
     let dt = ctx.input(|i| i.stable_dt).min(0.1);
+    let (horizontal_modifier, vertical_modifier, zoom_modifier) = ctx.options(|options| {
+        (
+            options.input_options.horizontal_scroll_modifier,
+            options.input_options.vertical_scroll_modifier,
+            options.input_options.zoom_modifier,
+        )
+    });
     if reveal {
         state.suppress_hscroll_smoothing = true;
     } else if ctx.input(|i| {
         !i.is_scrolling()
-            || i.events
-                .iter()
-                .any(|event| matches!(event, egui::Event::MouseWheel { .. }))
+            || i.events.iter().any(|event| match event {
+                egui::Event::MouseWheel {
+                    delta, modifiers, ..
+                } => {
+                    if modifiers.matches_any(zoom_modifier) {
+                        return false;
+                    }
+                    let horizontal = modifiers.matches_any(horizontal_modifier);
+                    let vertical = modifiers.matches_any(vertical_modifier);
+                    if horizontal && !vertical {
+                        delta.x + delta.y != 0.0
+                    } else if vertical && !horizontal {
+                        false
+                    } else {
+                        delta.x != 0.0
+                    }
+                }
+                _ => false,
+            })
     }) {
         state.suppress_hscroll_smoothing = false;
     }
