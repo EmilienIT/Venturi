@@ -763,7 +763,12 @@ fn aac_clock_drift_starting_mid_file_matches_full_decode() {
 
 #[test]
 fn clean_mpeg_ts_aac_preserves_reference_decoded_samples() {
-    let path = test_file("clock-clean.ts", &chirp_at(44_100), &["-c:a", "aac"], false);
+    let path = test_file(
+        "clock-clean-ts.ts",
+        &chirp_at(44_100),
+        &["-c:a", "aac"],
+        false,
+    );
     let raw = path.with_extension("f32le");
     crate::test_support::ffmpeg(&["-i", path.to_str().unwrap(), "-f", "f32le"], &raw);
     let expected: Vec<f32> = std::fs::read(raw)
