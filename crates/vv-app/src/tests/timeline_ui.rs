@@ -1,6 +1,134 @@
 use super::*;
 
 #[test]
+fn a_keyboard_reveal_discards_wheel_smoothing_until_fresh_input() {
+    let ctx = egui::Context::default();
+    let scroll_id = egui::Id::new("keyboard_wheel_smoothing");
+    let mut state = TimelineState::default();
+    state.pixels_per_sec = 25.0;
+    state.last_rendered_pps = 25.0;
+    state.playhead = 100;
+    let panel = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+    let mut scroll = egui::containers::scroll_area::State::default();
+    scroll.offset.x = 100.0;
+    scroll.store(&ctx, scroll_id);
+    let wheel = || egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(-5.0, 0.0),
+        modifiers: egui::Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    };
+    for frame in 0..6 {
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(panel);
+        input.time = Some(frame as f64 / 60.0);
+        input.events = match frame {
+            0 | 5 => vec![egui::Event::PointerMoved(panel.center()), wheel()],
+            _ => Vec::new(),
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            if frame == 0 {
+                return;
+            }
+            if frame == 1 {
+                state.reveal_playhead = true;
+                assert!(ui.input(|i| i.smooth_scroll_delta.x != 0.0));
+            }
+            sync_timeline_scroll(
+                &ctx, scroll_id, &mut state, 25.0, 1.0, 200.0, 2000.0, false, panel, true,
+            );
+            let offset = egui::containers::scroll_area::State::load(&ctx, scroll_id)
+                .unwrap()
+                .offset
+                .x;
+            if frame < 5 {
+                assert_eq!(
+                    offset, 100.0,
+                    "wheel smoothing undid the reveal in frame {frame}"
+                );
+                assert_eq!(state.hscroll_vel, 0.0);
+            } else {
+                assert!(offset > 100.0, "fresh wheel input must still scroll");
+                assert!(state.hscroll_vel > 0.0);
+            }
+        });
+        output.textures_delta.clear();
+    }
+}
+
+#[test]
+fn the_timeline_reveals_keyboard_steps_beyond_its_last_clip() {
+    let mut app = crate::VenturiApp::default();
+    let timeline = app.ensure_timeline();
+    let id = app.session.project.alloc_clip_id();
+    app.session.project.timelines[timeline].tracks[0]
+        .clips
+        .push(Clip::from_source_range(
+            id,
+            vv_core::ClipSource::SolidColor,
+            0,
+            100,
+            0,
+            vv_core::Rational::one(),
+        ));
+    app.scrub_audio = false;
+    let fps = app.session.project.timelines[timeline].fps.as_f64() as f32;
+    app.timeline_state.pixels_per_sec = fps;
+    app.timeline_state.last_rendered_pps = fps;
+    let ctx = egui::Context::default();
+    let mut scroll_id = None;
+    for frame in 0..5 {
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 600.0),
+        ));
+        if frame == 2 {
+            app.timeline_state.playhead = 5000;
+            app.step_playhead_with_arrows(Some(1), 0.0);
+        }
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                if frame == 1 {
+                    ui.horizontal_top(|ui| {
+                        scroll_id =
+                            Some(ui.make_persistent_id(egui::IdSalt::new("timeline_scroll")));
+                    });
+                } else {
+                    show_timeline(
+                        ui,
+                        &mut app.session.project,
+                        &mut app.session.history,
+                        timeline,
+                        &|_| "media".to_string(),
+                        &mut app.timeline_state,
+                        true,
+                        true,
+                        &[],
+                        &[],
+                        &[],
+                        &std::collections::HashMap::new(),
+                        false,
+                    );
+                }
+            });
+        });
+        output.textures_delta.clear();
+        if frame >= 2 {
+            let offset = egui::containers::scroll_area::State::load(&ctx, scroll_id.unwrap())
+                .unwrap()
+                .offset
+                .x;
+            let x = app.timeline_state.playhead as f32;
+            assert!(
+                x >= offset && x <= offset + 800.0 - TRACK_HEADER_WIDTH,
+                "playhead {x} beyond last clip is outside viewport at {offset}"
+            );
+        }
+    }
+}
+
+#[test]
 fn keyboard_steps_keep_the_playhead_visible_after_pan_inertia() {
     let mut app = crate::VenturiApp::default();
     let timeline = app.ensure_timeline();
