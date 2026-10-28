@@ -1565,13 +1565,31 @@ fn level_files(dir: &Path) -> usize {
 }
 
 /// A cache on disk in a fresh temp dir, with `plugins` as its pool.
-fn disk_cache(name: &str, plugins: Instances) -> (LevelCache, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("vv-levels-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn disk_cache(name: &str, plugins: Instances) -> (LevelCache, TempDir) {
+    let dir = TempDir::new(&format!("vv-levels-{name}"));
     let mut levels = fixed_list_cache();
-    levels.dir = Some(dir.clone());
+    levels.dir = Some(dir.path().to_path_buf());
     levels.plugins = vec![plugins];
     (levels, dir)
+}
+
+#[test]
+fn a_disk_cache_directory_is_removed_when_a_test_unwinds() {
+    let mut path = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (plugins, _) = counting_pool(|| None);
+        let (cache, _dir) = disk_cache("unwind", plugins);
+        let dir = cache.dir.as_ref().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("levels"), b"cached measurement").unwrap();
+        path = Some(dir.clone());
+        panic!("exercise cache fixture cleanup");
+    }));
+    assert!(result.is_err());
+    let path = path.unwrap();
+    let removed = !path.exists();
+    let _ = std::fs::remove_dir_all(&path);
+    assert!(removed, "a panicking test left its disk cache behind");
 }
 
 fn normalized_after_plugin(
@@ -1614,7 +1632,7 @@ fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
 
         both_measures_through(&project, &tl, &mut levels, true);
         assert!(levels.degraded, "nested {nested}");
-        assert_eq!(level_files(&dir), 0, "nested {nested}");
+        assert_eq!(level_files(dir.path()), 0, "nested {nested}");
         let rendered = levels.rendered;
         assert!(rendered > 0);
 
@@ -1627,12 +1645,11 @@ fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
             "nested {nested}: measured again"
         );
         assert!(!levels.degraded, "nested {nested}");
-        assert!(level_files(&dir) > 0, "nested {nested}");
+        assert!(level_files(dir.path()) > 0, "nested {nested}");
 
         let rendered = levels.rendered;
         both_measures_through(&project, &tl, &mut levels, true);
         assert_eq!(levels.rendered, rendered, "nested {nested}: found");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -1646,8 +1663,7 @@ fn a_bypassed_plugin_does_not_degrade_a_measure() {
     let (mut levels, dir) = disk_cache("bypassed", failing);
     both_measures_through(&project, &tl, &mut levels, true);
     assert!(!levels.degraded);
-    assert!(level_files(&dir) > 0);
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(level_files(dir.path()) > 0);
 }
 
 /// Halves the audio.
@@ -1679,16 +1695,14 @@ fn a_measure_plays_a_plugin_the_live_pool_did_not_make_as_its_key_says() {
     let tl = normalized_after_plugin(&media_dir, &mut project, false, "reverse.wav");
     // `BothMeasures` keys the segments with no plugin made.
     let (failing, _) = counting_pool(|| None);
-    let (mut dry, dry_dir) = disk_cache("reverse-dry", failing);
+    let (mut dry, _dry_dir) = disk_cache("reverse-dry", failing);
     let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
-    let (mut wet, wet_dir) = disk_cache("reverse-wet", halving);
+    let (mut wet, _wet_dir) = disk_cache("reverse-wet", halving);
     let expected = both_measures(&project, &tl, &mut dry)[0].0;
     let measured = both_measures(&project, &tl, &mut wet)[0].0;
     assert!(expected > 0.1);
     assert_eq!(measured, expected);
     assert!(!wet.degraded);
-    let _ = std::fs::remove_dir_all(dry_dir);
-    let _ = std::fs::remove_dir_all(wet_dir);
 }
 
 #[test]
@@ -1701,8 +1715,7 @@ fn a_plugin_that_is_not_installed_does_not_degrade_a_measure() {
     let (mut levels, dir) = disk_cache("uninstalled", pool);
     both_measures(&project, &tl, &mut levels);
     assert!(!levels.degraded);
-    assert!(level_files(&dir) > 0);
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(level_files(dir.path()) > 0);
 }
 
 #[test]
@@ -1726,15 +1739,13 @@ fn a_measure_inside_a_compound_plays_unmade_plugins_as_its_key_says() {
     });
     let tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
     let (failing, _) = counting_pool(|| None);
-    let (mut dry, dry_dir) = disk_cache("nested-dry", failing);
+    let (mut dry, _dry_dir) = disk_cache("nested-dry", failing);
     let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
-    let (mut wet, wet_dir) = disk_cache("nested-wet", halving);
+    let (mut wet, _wet_dir) = disk_cache("nested-wet", halving);
     let expected = both_measures(&project, &tl, &mut dry)[0].0;
     let measured = both_measures(&project, &tl, &mut wet)[0].0;
     assert!(expected > 0.1);
     assert_eq!(measured, expected);
-    let _ = std::fs::remove_dir_all(dry_dir);
-    let _ = std::fs::remove_dir_all(wet_dir);
 }
 
 /// An echo inside a compound clip remembers beyond the preroll as well.
@@ -1861,8 +1872,7 @@ fn a_nested_measure_that_is_stopped_stores_nothing() {
     let result = source.result.expect("a level was asked for");
     assert!(matches!(result, Err(ExportError::Cancelled)), "{result:?}");
     assert_eq!(cache.rendered, 0);
-    assert_eq!(level_files(&dir), 0);
-    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(level_files(dir.path()), 0);
 }
 
 /// Records where the segments of each level end.

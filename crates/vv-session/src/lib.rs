@@ -29,13 +29,22 @@ mod test_support {
     impl TempDir {
         pub fn new(prefix: &str) -> Self {
             static SEQ: AtomicU64 = AtomicU64::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "{prefix}-{}-{}",
-                std::process::id(),
-                SEQ.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            Self::with_sequence(prefix, &SEQ)
+        }
+
+        pub(super) fn with_sequence(prefix: &str, sequence: &AtomicU64) -> Self {
+            loop {
+                let dir = std::env::temp_dir().join(format!(
+                    "{prefix}-{}-{}",
+                    std::process::id(),
+                    sequence.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => return Self(dir),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("cannot create test directory: {error}"),
+                }
+            }
         }
 
         pub fn path(&self) -> &Path {
@@ -53,3 +62,7 @@ mod test_support {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/lib.rs"]
+mod tests;
