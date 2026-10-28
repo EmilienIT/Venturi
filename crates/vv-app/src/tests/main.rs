@@ -3993,7 +3993,7 @@ fn export_pauses_the_proxy_queue_and_resumes_it_afterwards() {
     );
 }
 
-fn browse_fixture(name: &str) -> (VenturiApp, MediaId, crate::test_support::TempDir) {
+fn browse_fixture(name: &str) -> (crate::test_support::TempDir, VenturiApp, MediaId) {
     let dir = crate::test_support::TempDir::new("vv-app-browse-test");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
@@ -4019,12 +4019,12 @@ fn browse_fixture(name: &str) -> (VenturiApp, MediaId, crate::test_support::Temp
     let media_id = app.add_media_to_pool(path).unwrap();
     app.preview_media(media_id);
     app.browsing = Some(Browsed::Media(media_id));
-    (app, media_id, dir)
+    (dir, app, media_id)
 }
 
 #[test]
 fn space_plays_the_media_pool_preview_instead_of_leaving_it() {
-    let (mut app, media_id, _dir) = browse_fixture("space.mp4");
+    let (_dir, mut app, media_id) = browse_fixture("space.mp4");
     app.toggle_playback();
     assert_eq!(app.browsing, Some(Browsed::Media(media_id)));
     assert!(app.is_timeline_playing());
@@ -4042,7 +4042,7 @@ fn space_plays_the_media_pool_preview_instead_of_leaving_it() {
 
 #[test]
 fn preview_plays_the_media_audio_and_leaving_it_restores_the_timeline_mix() {
-    let (mut app, _, _dir) = browse_fixture("audio.mp4");
+    let (_dir, mut app, _) = browse_fixture("audio.mp4");
     let fps = app.browse_fps();
     app.timeline_audio();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -4079,7 +4079,7 @@ fn preview_plays_the_media_audio_and_leaving_it_restores_the_timeline_mix() {
 
 #[test]
 fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
-    let (mut app, media_id, _dir) = browse_fixture("marks.mp4");
+    let (_dir, mut app, media_id) = browse_fixture("marks.mp4");
     app.seek_browse(10);
     app.mark_at_playhead(true);
     app.seek_browse(29);
@@ -4114,7 +4114,7 @@ fn video_only_and_audio_only_drags_insert_just_that_stream() {
         (timeline_ui::DragStreams::VideoOnly, TrackKind::Video),
         (timeline_ui::DragStreams::AudioOnly, TrackKind::Audio),
     ] {
-        let (mut app, media_id, _dir) = browse_fixture("streams.mp4");
+        let (_dir, mut app, media_id) = browse_fixture("streams.mp4");
         let meta = app.session.project.media_pool[media_id].meta.clone();
         app.add_media_to_timeline_at(
             timeline_ui::MediaDrag {
@@ -5320,7 +5320,7 @@ fn a_text_edit_leaves_the_animated_text_of_other_titles_to_keyframes() {
 
 #[test]
 fn a_library_asset_previews_without_joining_the_project_until_dragged() {
-    let (source, media_id, _dir) = browse_fixture("library-asset.mp4");
+    let (_dir, source, media_id) = browse_fixture("library-asset.mp4");
     let path = source.session.project.media_pool[media_id].path.clone();
     let mut app = VenturiApp::default();
     let origin = app.clipboard_origin();
