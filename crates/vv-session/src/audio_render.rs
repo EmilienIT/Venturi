@@ -124,14 +124,27 @@ fn measure_missing(
         .filter(|segment| levels.get(segment.key).is_none())
         .cloned()
         .collect();
-    let (missing, _) = levels.claim(&missing);
-    let runs = runs(&missing, levels.threads);
+    let (mine, theirs) = levels.claim(&missing);
+    let (to_measure, to_wait) = if levels.holding {
+        let mut all = mine.clone();
+        all.extend(theirs.iter().copied());
+        all.sort_by_key(|segment| segment.frames.start);
+        (all, Vec::new())
+    } else {
+        (mine.clone(), theirs)
+    };
+    let runs = runs(&to_measure, levels.threads);
     let holding = std::mem::replace(&mut levels.holding, true);
     let measured = runs
         .iter()
         .try_for_each(|run| measure_run(analysis, run, levels));
     levels.holding = holding;
+    if measured.is_err() {
+        levels.release(&mine);
+    }
     measured?;
+    let to_wait: Vec<u64> = to_wait.iter().map(|segment| segment.key).collect();
+    levels.wait_for(&to_wait);
     collect_parts(analysis, levels)
         .ok_or_else(|| ExportError::Failed("a segment was not measured".into()))
 }

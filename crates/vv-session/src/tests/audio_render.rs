@@ -1,4 +1,127 @@
 use super::*;
+
+fn with_missing_level_analysis(check: impl FnMut(&LevelAnalysis, &mut LevelCache)) {
+    struct Probe<'c, F> {
+        cache: &'c mut LevelCache,
+        check: F,
+        seen: bool,
+    }
+    impl<F: FnMut(&LevelAnalysis, &mut LevelCache)> AudioSource for Probe<'_, F> {
+        fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+            decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+        }
+        fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+            Some(Arc::new(Passthrough))
+        }
+        fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+            if !self.seen {
+                self.seen = true;
+                (self.check)(&analysis, self.cache);
+            }
+            LevelReading::Ready(1.0)
+        }
+    }
+    let mut project = Project::default();
+    let tl = echoed_gap(&mut project, "missing-level-claims.wav", false);
+    let mut cache = echo_cache();
+    let mut source = Probe {
+        cache: &mut cache,
+        check,
+        seen: false,
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    assert!(source.seen);
+}
+
+#[test]
+fn missing_level_parts_release_claims_after_cancellation_and_can_be_retried() {
+    with_missing_level_analysis(|analysis, cache| {
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = Directory(std::env::temp_dir().join(
+            format!("vv-missing-claims-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()),
+        ));
+        std::fs::create_dir(&root.0).unwrap();
+        cache.dir = Some(root.0.clone());
+        assert!(measure_level(analysis, cache).unwrap().is_finite());
+        for segment in &analysis.segments {
+            let path = cache.path(segment.key).unwrap();
+            assert!(
+                path.is_file(),
+                "a persisted part is needed for the vanished-file control"
+            );
+            std::fs::remove_file(path).unwrap();
+            forget(&mut cache.shared.state.lock().unwrap(), segment.key);
+        }
+        assert!(collect_parts(analysis, cache).is_none());
+        let stop = Arc::new(AtomicBool::new(true));
+        cache.cancel = Some(stop.clone());
+        assert!(matches!(
+            measure_missing(analysis, cache),
+            Err(ExportError::Cancelled)
+        ));
+        // Fail before retrying rather than hang on a leaked claim.
+        assert!(
+            cache.shared.state.lock().unwrap().measuring.is_empty(),
+            "cancelled claims remain held"
+        );
+        stop.store(false, Ordering::Relaxed);
+        assert!(measure_level(analysis, cache).unwrap().is_finite());
+        assert!(collect_parts(analysis, cache).is_some());
+    });
+}
+
+#[test]
+fn missing_level_parts_wait_for_other_measurements() {
+    with_missing_level_analysis(|analysis, cache| {
+        measure_level(analysis, cache).unwrap();
+        let parts = collect_parts(analysis, cache).unwrap();
+        for segment in &analysis.segments {
+            forget(&mut cache.shared.state.lock().unwrap(), segment.key);
+        }
+        let mut owner = cache.for_thread();
+        let (claimed, _) = owner.claim(&analysis.segments);
+        assert_eq!(claimed.len(), analysis.segments.len());
+        let mut reader = cache.for_thread();
+        std::thread::scope(|scope| {
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                done_tx
+                    .send(measure_missing(analysis, &mut reader))
+                    .unwrap();
+            });
+            started_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let early = done_rx.recv_timeout(std::time::Duration::from_millis(100));
+            for (segment, part) in analysis.segments.iter().zip(&parts) {
+                owner.put(segment.key, part, None, false);
+            }
+            assert!(
+                matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+                "did not wait for claimed parts: {early:?}"
+            );
+            let found = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.len(), parts.len());
+        });
+    });
+}
 use vv_audio::mixer::ClipInput;
 use vv_audio::mixer::{mix_range, timeline_frame_to_sample};
 use vv_core::{
