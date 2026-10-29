@@ -78,7 +78,7 @@ the part that has to be perfect.
 - **Linux first.** Developed and tested on Linux, not ported to it. Also runs
   on Apple Silicon Macs, and possibly Windows.
 
-Mixer, Color and Curves can open as separate native windows: open the panel
+Mixer, Color, Curves and Properties can open as separate native windows: open the panel
 from **View**, then choose **Detach**. Use **Reattach** to return it to the
 editor. Closing a panel window leaves the project open; reopen it from View.
 Window sizes and detached state are saved. Window placement is chosen by the

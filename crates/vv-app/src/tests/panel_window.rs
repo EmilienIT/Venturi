@@ -1,5 +1,72 @@
 use super::*;
 
+#[derive(Debug)]
+struct DroppedClip;
+
+impl egui::DroppedFile for DroppedClip {
+    fn path(&self) -> &std::path::Path {
+        std::path::Path::new("native-panel-clip.mp4")
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("Only the file handle is forwarded".into())
+    }
+}
+
+#[test]
+fn properties_remain_visible_on_embedded_backends() {
+    let ctx = Context::default();
+    let mut placement = Placement {
+        detached: true,
+        size: [640.0, 480.0],
+    };
+    let mut open = true;
+    let mut drawn = false;
+    let mut output = ctx.run_ui(RawInput::default(), |ui| {
+        assert!(
+            show_right(ui, "Properties", 300.0, &mut open, &mut placement, |ui| {
+                ui.label("Shared content");
+                drawn = true;
+            })
+            .is_some()
+        );
+    });
+    output.textures_delta.clear();
+    assert!(drawn && open);
+    assert!(!placement.detached);
+}
+
+#[test]
+fn child_file_drops_reach_the_root_once_even_without_keyboard_focus() {
+    let ctx = Context::default();
+    let file: egui::DroppedFileHandle = std::sync::Arc::new(DroppedClip);
+    let mut output = ctx.run_ui(
+        RawInput {
+            focused: false,
+            dropped_files: vec![file.clone()],
+            ..Default::default()
+        },
+        |ui| {
+            record_input(ui, "properties");
+            record_input(ui, "properties");
+        },
+    );
+    output.textures_delta.clear();
+    let mut child = RawInput {
+        viewport_id: ViewportId::from_hash_of("child"),
+        ..Default::default()
+    };
+    forward_to_root(&ctx, &mut child);
+    assert!(child.dropped_files.is_empty());
+    let mut root = RawInput::default();
+    forward_to_root(&ctx, &mut root);
+    assert_eq!(root.dropped_files.len(), 1);
+    assert!(std::sync::Arc::ptr_eq(&root.dropped_files[0], &file));
+    let mut next = RawInput::default();
+    forward_to_root(&ctx, &mut next);
+    assert!(next.dropped_files.is_empty());
+}
+
 #[test]
 fn embedded_backends_keep_a_detached_panel_visible() {
     let ctx = Context::default();
