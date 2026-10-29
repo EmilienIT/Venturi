@@ -83,7 +83,7 @@ from **View**, then choose **Detach**. Use **Reattach** to return it to the
 editor. Closing a panel window leaves the project open; reopen it from View.
 Window sizes and detached state are saved. Window placement is chosen by the
 desktop on reopening. Backends without native windows keep these panels inside
-the editor. Media, Properties, timeline and viewer remain in the main window.
+the editor. Media, Effects, timeline and viewer remain in the main window.
 
 ## Install
 
