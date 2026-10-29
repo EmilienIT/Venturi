@@ -280,8 +280,8 @@ pipeline's alpha blending; the other 14 modes copy the stack composed so far
   the frame. A seek initially places by timestamp, so the paths can differ
   by the tolerated drift of up to 5 ms before re-placement. Preview, export
   and level analysis can therefore disagree on placement for such a stream.
-  This is an accepted placement tolerance, not a guarantee of identical
-  sample values or a bound on errors from missing timestamps, overlaps or
+  This current limitation does not guarantee identical sample values or
+  bound errors from missing timestamps, overlaps or
   codec priming. No drift compensation or time stretching is applied;
   same-rate audio bypasses rate resampling, and seek preroll remains 0.5 s,
   including for Matroska. Distinct timestamp gaps keep timestamp placement.
