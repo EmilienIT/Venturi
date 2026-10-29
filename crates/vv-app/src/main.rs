@@ -975,16 +975,32 @@ impl VenturiApp {
         }
     }
 
-    /// I/O keys: on the preview if active, otherwise on the timeline.
-    fn mark_at_playhead(&mut self, is_in: bool) {
-        let (marks, frame, total) = if self.browsing.is_some() {
-            let total = self.browse_total_frames();
-            (&mut self.browse_marks, self.browse_playhead, total)
-        } else if let Some(timeline_id) = self.timeline_id {
-            let total = self.session.project.timelines[timeline_id].total_frames();
-            let state = &mut self.timeline_state;
-            (&mut state.export_marks, state.playhead, total)
+    /// Length of what the I/O keys mark: the preview if active, otherwise
+    /// the timeline. 0 when there is nothing to mark.
+    fn mark_target_frames(&self) -> FrameIdx {
+        if self.browsing.is_some() {
+            if self.preview_error.is_some() {
+                0
+            } else {
+                self.browse_total_frames()
+            }
         } else {
+            self.timeline_id
+                .map_or(0, |id| self.session.project.timelines[id].total_frames())
+        }
+    }
+
+    fn mark_at_playhead(&mut self, is_in: bool) {
+        let total = self.mark_target_frames();
+        if total <= 0 {
+            return;
+        }
+        let frame = if self.browsing.is_some() {
+            self.browse_playhead
+        } else {
+            self.timeline_state.playhead
+        };
+        let Some(marks) = self.mark_target() else {
             return;
         };
         if is_in {
@@ -994,25 +1010,13 @@ impl VenturiApp {
         }
     }
 
-    /// Returns marks for the active preview or timeline, if either is active.
-    ///
-    /// An active media preview takes priority over the timeline's export range.
-    fn current_mark_range(&self) -> Option<transport::MarkRange> {
+    fn mark_target(&mut self) -> Option<&mut transport::MarkRange> {
         if self.browsing.is_some() {
-            Some(self.browse_marks)
-        } else if self.timeline_id.is_some() {
-            Some(self.timeline_state.export_marks)
-        } else {
-            None
-        }
-    }
-
-    /// Returns mutable marks for the active preview or timeline, if either is active.
-    ///
-    /// An active media preview takes priority over the timeline's export range.
-    fn current_mark_range_mut(&mut self) -> Option<&mut transport::MarkRange> {
-        if self.browsing.is_some() {
-            Some(&mut self.browse_marks)
+            if self.preview_error.is_some() {
+                None
+            } else {
+                Some(&mut self.browse_marks)
+            }
         } else if self.timeline_id.is_some() {
             Some(&mut self.timeline_state.export_marks)
         } else {
@@ -1024,7 +1028,7 @@ impl VenturiApp {
     ///
     /// The unset endpoint resolves to frame zero; Out remains unchanged.
     fn clear_in_point(&mut self) {
-        if let Some(marks) = self.current_mark_range_mut() {
+        if let Some(marks) = self.mark_target() {
             marks.clear_in();
         }
     }
@@ -1033,7 +1037,7 @@ impl VenturiApp {
     ///
     /// The unset endpoint resolves to the content end; In remains unchanged.
     fn clear_out_point(&mut self) {
-        if let Some(marks) = self.current_mark_range_mut() {
+        if let Some(marks) = self.mark_target() {
             marks.clear_out();
         }
     }
@@ -1042,7 +1046,7 @@ impl VenturiApp {
     ///
     /// Both unset endpoints resolve to the full content range.
     fn clear_in_and_out(&mut self) {
-        if let Some(marks) = self.current_mark_range_mut() {
+        if let Some(marks) = self.mark_target() {
             marks.clear_all();
         }
     }
@@ -4201,6 +4205,12 @@ impl VenturiApp {
             }
         }
         self.sync_timeline_audio();
+        if let Some(audio) = &self.timeline_audio
+            && let Some(at) = audio.next_retry()
+        {
+            ui.ctx()
+                .request_repaint_after(at.saturating_duration_since(std::time::Instant::now()));
+        }
         self.sync_window_title(ui.ctx());
 
         self.handle_shortcuts(ui);

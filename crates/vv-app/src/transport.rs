@@ -6,19 +6,17 @@
 use vv_core::FrameIdx;
 
 /// Stores optional In and Out endpoints for preview trimming or timeline export.
-///
 /// An unset endpoint follows its content edge, so cleared marks expand the range.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MarkRange {
     /// Inclusive first frame, or `None` to start at frame zero.
     pub mark_in: Option<FrameIdx>,
-    /// Exclusive end frame, or `None` to extend to the content end.
+    /// Exclusive: "o" on frame `p` includes it.
     pub mark_out: Option<FrameIdx>,
 }
 
 impl MarkRange {
     /// Resolves the selected range within `0..=total`, keeping `in <= out`.
-    ///
     /// Unset endpoints use the content edges; out-of-range values are clamped.
     pub fn resolve(&self, total: FrameIdx) -> (FrameIdx, FrameIdx) {
         let total = total.max(0);
@@ -28,7 +26,6 @@ impl MarkRange {
     }
 
     /// Sets the inclusive In point and clamps it to the content range.
-    ///
     /// Clears Out if the new In point would otherwise follow it.
     pub fn set_in(&mut self, frame: FrameIdx, total: FrameIdx) {
         let frame = frame.clamp(0, total.max(0));
@@ -39,7 +36,6 @@ impl MarkRange {
     }
 
     /// Sets Out after the inclusive frame and clamps it to the content range.
-    ///
     /// Clears In if the new Out point would otherwise precede or touch it.
     pub fn set_out(&mut self, frame: FrameIdx, total: FrameIdx) {
         let out = (frame + 1).clamp(0, total.max(0));
@@ -49,20 +45,16 @@ impl MarkRange {
         }
     }
 
-    /// Clears In so the resolved range starts at the first content frame.
     pub fn clear_in(&mut self) {
         self.mark_in = None;
     }
 
-    /// Clears Out so the resolved range extends to the content end.
     pub fn clear_out(&mut self) {
         self.mark_out = None;
     }
 
-    /// Clears both endpoints so the resolved range covers all content.
     pub fn clear_all(&mut self) {
-        self.mark_in = None;
-        self.mark_out = None;
+        *self = Self::default();
     }
 
     /// Reports whether these marks resolve to the full content range.

@@ -503,7 +503,54 @@ impl VenturiApp {
                         }
                         ui.label(t!("menu.zoom_hint"));
                         ui.separator();
-                        let marks = self.current_mark_range();
+                        if ui
+                            .button(keymap.menu_label(
+                                &t!("timeline.retime_controls"),
+                                Action::RetimeControls,
+                            ))
+                            .clicked()
+                        {
+                            self.toggle_retime_controls();
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.timeline_state.selected.is_empty(),
+                                egui::Button::new(t!("timeline.remove_silences")),
+                            )
+                            .clicked()
+                        {
+                            self.timeline_state.silence_dialog_requested =
+                                Some(self.timeline_state.selected.iter().copied().collect());
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                self.timeline_id.is_some(),
+                                egui::Button::new(
+                                    keymap
+                                        .menu_label(&t!("timeline.add_marker"), Action::AddMarker),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.add_marker_at_playhead();
+                            ui.close();
+                        }
+                        let can_mark = self.mark_target_frames() > 0;
+                        for (action, is_in) in [(Action::MarkIn, true), (Action::MarkOut, false)] {
+                            if ui
+                                .add_enabled(
+                                    can_mark,
+                                    egui::Button::new(keymap.menu_label(&action.label(), action)),
+                                )
+                                .clicked()
+                            {
+                                self.mark_at_playhead(is_in);
+                                ui.close();
+                            }
+                        }
+                        let marks = self.mark_target().copied();
                         if ui
                             .add_enabled(
                                 marks.is_some_and(|marks| marks.mark_in.is_some()),
@@ -541,41 +588,6 @@ impl VenturiApp {
                             .clicked()
                         {
                             self.clear_in_and_out();
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui
-                            .button(keymap.menu_label(
-                                &t!("timeline.retime_controls"),
-                                Action::RetimeControls,
-                            ))
-                            .clicked()
-                        {
-                            self.toggle_retime_controls();
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                !self.timeline_state.selected.is_empty(),
-                                egui::Button::new(t!("timeline.remove_silences")),
-                            )
-                            .clicked()
-                        {
-                            self.timeline_state.silence_dialog_requested =
-                                Some(self.timeline_state.selected.iter().copied().collect());
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                self.timeline_id.is_some(),
-                                egui::Button::new(
-                                    keymap
-                                        .menu_label(&t!("timeline.add_marker"), Action::AddMarker),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.add_marker_at_playhead();
                             ui.close();
                         }
                     })

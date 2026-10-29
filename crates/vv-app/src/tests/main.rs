@@ -4098,7 +4098,6 @@ fn preview_plays_the_media_audio_and_leaving_it_restores_the_timeline_mix() {
     );
 }
 
-/// Verify that preview mark clearing updates the source range used for trimming.
 #[test]
 fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
     let (mut app, media_id) = browse_fixture("marks.mp4");
@@ -4108,18 +4107,6 @@ fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
     app.mark_at_playhead(false);
     let (source_in, source_out) = app.browse_marks.resolve(app.browse_total_frames());
     assert_eq!((source_in, source_out), (10, 30));
-
-    let total = app.browse_total_frames();
-    app.clear_in_point();
-    assert_eq!(app.browse_marks.resolve(total), (0, 30));
-    app.seek_browse(10);
-    app.mark_at_playhead(true);
-    app.clear_out_point();
-    assert_eq!(app.browse_marks.resolve(total), (10, total));
-    app.seek_browse(29);
-    app.mark_at_playhead(false);
-    app.clear_in_and_out();
-    assert_eq!(app.browse_marks.resolve(total), (0, total));
 
     app.add_media_to_timeline_at(
         timeline_ui::MediaDrag {
@@ -4140,6 +4127,22 @@ fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
             (10, 30, 5)
         );
     }
+}
+
+#[test]
+fn clearing_preview_marks_uses_the_active_valid_preview() {
+    let (mut app, _) = browse_fixture("clear-marks.mp4");
+    let total = app.browse_total_frames();
+    app.browse_marks.set_in(10, total);
+    app.browse_marks.set_out(29, total);
+
+    app.preview_error = Some("preview failed".into());
+    app.clear_in_point();
+    assert_eq!(app.browse_marks.resolve(total), (10, 30));
+
+    app.preview_error = None;
+    app.clear_in_point();
+    assert_eq!(app.browse_marks.resolve(total), (0, 30));
 }
 
 #[test]
@@ -4179,7 +4182,6 @@ fn in_out_keys_on_the_timeline_set_the_export_range() {
     assert_eq!(app.timeline_state.export_marks.resolve(100), (20, 60));
 }
 
-/// Verify that independent and combined clearing restores timeline range edges.
 #[test]
 fn clearing_in_out_actions_restore_the_timeline_export_range() {
     let mut app = VenturiApp::default();
@@ -5594,10 +5596,9 @@ fn resetting_timeline_marks_restores_the_full_range_and_follows_new_content() {
 
 #[test]
 fn resetting_preview_marks_preserves_the_timeline_export_range() {
-    let mut app = VenturiApp::default();
+    let (mut app, _) = browse_fixture("reset-preview-marks.mp4");
     make_timeline_with_clip(&mut app, 0, 0, 100);
     app.timeline_state.export_marks.set_in(20, 100);
-    app.browsing = Some(Browsed::Asset("preview".into()));
     app.browse_marks.set_in(10, 100);
     app.browse_marks.set_out(29, 100);
     app.clear_in_and_out();
