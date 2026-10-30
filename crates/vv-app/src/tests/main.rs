@@ -1,5 +1,34 @@
 use super::*;
 
+#[cfg(feature = "performance")]
+#[test]
+fn a_profiled_redraw_keeps_preparation_and_ui_in_one_frame() {
+    let was_enabled = puffin::are_scopes_on();
+    puffin::set_scopes_on(true);
+    let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = frames.clone();
+    let sink = puffin::GlobalProfiler::lock().add_sink(Box::new(move |frame| {
+        observed.lock().unwrap().push(frame.meta().frame_index);
+    }));
+    let ctx = egui::Context::default();
+    let mut app = VenturiApp::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    // eframe owns the redraw boundary, before preparation and App::ui.
+    profiling::finish_frame!();
+    frames.lock().unwrap().clear();
+    {
+        puffin::profile_scope!("redraw preparation");
+    }
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        eframe::App::ui(&mut app, ui, &mut frame);
+    });
+    output.textures_delta.clear();
+    profiling::finish_frame!();
+    puffin::GlobalProfiler::lock().remove_sink(sink);
+    puffin::set_scopes_on(was_enabled);
+    assert_eq!(frames.lock().unwrap().len(), 1);
+}
+
 #[test]
 fn a_new_timeline_becomes_current_and_shows_up_in_the_media_pool() {
     let mut app = VenturiApp::default();

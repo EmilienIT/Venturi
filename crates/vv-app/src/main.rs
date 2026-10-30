@@ -4058,8 +4058,6 @@ impl eframe::App for VenturiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        #[cfg(feature = "performance")]
-        puffin::GlobalProfiler::lock().new_frame();
         // With MCP on, the session lives in a slot shared with the agent's
         // host thread between frames (see `mcp_host`).
         self.mcp_checkout();
