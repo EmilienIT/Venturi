@@ -83,6 +83,15 @@ A working graphics backend is required at runtime (Vulkan on Linux, through
 `mesa-vulkan-drivers` or the proprietary GPU driver): without one, `wgpu`
 finds no adapter and the window does not open.
 
+On Wayland, pointer focus and keyboard focus are separate. The
+[keyboard protocol](https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_keyboard)
+allows compositors to send modifiers without keyboard focus, but does not
+require it. If scrolling over an unfocused Venturi window does not recognize
+Alt or Ctrl, focus the window before using the modified scroll gesture. The
+Timeline menu's Zoom in and Zoom out actions provide an alternative. A problem
+that persists with keyboard focus needs a separate reproduction; this does
+not establish the cause of every compositor-specific modifier issue.
+
 `vv-app mcp` runs the MCP server for AI agents instead of the window, and
 `vv-app --mcp` opens the window with it on: see [MCP.md](MCP.md).
 
@@ -93,6 +102,12 @@ type (so the file manager opens projects with Venturi) into `~/.local` (or
 ```sh
 scripts/install-linux.sh              # --uninstall to remove, --prefix DIR to change
 ```
+
+Both this script and the release installer use the command `venturi` and the
+repository's desktop entry, icons and `.vvproj` association. When installed
+into the same directories, the last installer run wins. Both remove the
+legacy `bin/vv-app` binary on installation and uninstallation, and say so
+when it was there, since MCP configs pointing at it stop working.
 
 ## Test
 
@@ -105,6 +120,10 @@ the graphics tests share headless GPU resources and SIGSEGV intermittently
 when run in parallel. Some tests invoke `ffmpeg` from the command line to
 generate synthetic clips in `/tmp`, so the `ffmpeg` binary (not just the
 development libraries) also needs to be in `PATH`.
+
+The time-stretch tests need an FFmpeg built with librubberband
+(`scripts/build-ffmpeg.sh` builds one; Homebrew's does not). Without it they
+are skipped locally, and fail under CI.
 
 ### Where unit tests live
 
@@ -184,7 +203,8 @@ export uses FFmpeg's native AAC encoder.
 scripts/build-macos.sh
 ```
 
-Must run on a Mac with the Xcode command line tools and `pkgconf`. Produces
+Must run on a Mac with the Xcode command line tools, `pkgconf`, `meson` and
+`ninja` (`brew install pkgconf meson ninja`; meson builds rubberband). Produces
 `target/macos/Venturi.app` and `target/macos/Venturi-arm64.dmg`, with FFmpeg
 (libx264, librubberband, zlib, libmp3lame, libopus, libvorbis,
 VideoToolbox) bundled in

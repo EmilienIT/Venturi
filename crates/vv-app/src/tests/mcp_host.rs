@@ -175,9 +175,8 @@ fn a_project_replaced_by_the_agent_resets_the_editor() {
     assert_eq!(app.timeline_id, None, "the editor follows the new project");
 }
 
-fn video_file(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("vv-app-mcp-host");
-    std::fs::create_dir_all(&dir).unwrap();
+fn video_file(name: &str) -> (vv_media::test_support::TempDir, PathBuf) {
+    let dir = vv_media::test_support::TempDir::new("vv-app-mcp-host");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -192,7 +191,7 @@ fn video_file(name: &str) -> PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 fn import(path: &Path) -> ToolCall {
@@ -203,7 +202,7 @@ fn import(path: &Path) -> ToolCall {
 
 #[test]
 fn an_agent_import_does_not_move_the_users_view() {
-    let path = video_file("hidden.mp4");
+    let (_dir_path, path) = video_file("hidden.mp4");
     let (mut app, handle, ctx) = attached();
     app.import_warnings = vec!["the user's".into()];
 
@@ -218,7 +217,7 @@ fn an_agent_import_does_not_move_the_users_view() {
 
 #[test]
 fn an_agent_import_is_answered_while_the_window_keeps_drawing() {
-    let path = video_file("drawn.mp4");
+    let (_dir_path, path) = video_file("drawn.mp4");
     let (mut app, handle, ctx) = attached();
     let mut reply = handle.submit(import(&path));
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -270,8 +269,7 @@ fn screenshot_answers_with_the_next_drawn_frame() {
 
 #[test]
 fn an_agent_export_shows_in_the_progress_window() {
-    let dir = std::env::temp_dir().join("vv-app-mcp-export");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-app-mcp-export");
     let (mut app, handle, ctx) = attached();
     let (timeline, _) = solid_clip(&mut app);
 
@@ -291,6 +289,17 @@ fn an_agent_export_shows_in_the_progress_window() {
 
     let job: vv_session::JobId = started.value["job_id"].as_str().unwrap().parse().unwrap();
     assert_eq!(app.export.as_ref().map(|e| e.job), Some(job));
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while app.session.has_running_jobs() {
+        assert!(Instant::now() < deadline, "export never finished");
+        app.poll_session(&ctx);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.poll_session(&ctx);
+    let progress = app.export.as_ref().unwrap().progress.lock().unwrap();
+    assert!(progress.done);
+    assert!(progress.error.is_none(), "{:?}", progress.error);
 }
 
 #[test]
@@ -305,4 +314,37 @@ fn turning_mcp_off_gives_the_session_back_to_the_editor() {
 
     assert!(app.mcp.is_none());
     assert!(app.session.project.timelines.contains_key(timeline));
+}
+
+/// MCP on with a project installed (epoch above zero), the session in the slot between frames.
+fn attached_with_gesture() -> (VenturiApp, vv_core::TimelineId, egui::Context) {
+    let (mut app, id) = crate::tests::app_with_pending_gesture();
+    let ctx = egui::Context::default();
+    let (_handle, inbox) = vv_mcp::channel(|| {});
+    let project = std::mem::take(&mut app.session.project);
+    app.session.install_project(project, None);
+    app.mcp = Some(McpHost::for_test(inbox, &mut app.session, &ctx));
+    app.seen_epoch = app.session.epoch();
+    assert!(app.seen_epoch > 0);
+    app.mcp_checkin(&ctx);
+    (app, id, ctx)
+}
+
+#[test]
+fn editors_are_pumped_by_logic_with_mcp_on_between_frames() {
+    let (mut app, _, ctx) = attached_with_gesture();
+    eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
+    let slot = app.mcp.as_ref().unwrap().shared.slot.lock().unwrap();
+    assert!(!slot.in_ui, "the session went back to the slot");
+    assert_eq!(slot.session.history.labels().count(), 1);
+}
+
+#[test]
+fn editors_are_not_pumped_after_the_agent_replaced_the_project() {
+    let (mut app, _, ctx) = attached_with_gesture();
+    app.seen_epoch -= 1;
+    eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
+    let slot = app.mcp.as_ref().unwrap().shared.slot.lock().unwrap();
+    assert!(!slot.in_ui);
+    assert_eq!(slot.session.history.labels().count(), 0);
 }

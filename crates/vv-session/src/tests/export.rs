@@ -1,6 +1,7 @@
 use super::*;
 use vv_core::ClipSource;
 use vv_core::{Clip, Keyframed, Rgba, Track, TrackKind};
+use vv_media::test_support::TempDir;
 
 fn solid_color_clip(id: u64, start: FrameIdx, len: FrameIdx, color: Rgba) -> Clip {
     let mut clip = Clip::from_source_range(
@@ -187,8 +188,7 @@ fn render_video_frame_recurses_into_a_compound_clips_nested_timeline() {
 /// the next: reopening and seeking it cost about 90 ms a frame.
 #[test]
 fn the_decoders_of_nested_clips_stay_open_between_frames() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("nested_decoder_source.mkv");
     vv_media::test_support::ffmpeg(
         &["-f", "lavfi", "-i", "color=c=red:size=4x2:rate=25:d=1"],
@@ -374,8 +374,7 @@ fn render_video_frame_lets_the_track_below_show_through_the_compound_clips_empty
 /// be preserved from decode all the way to compositing.
 #[test]
 fn render_video_frame_lets_the_track_below_show_through_a_transparent_png() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("half_transparent.png");
     // Left half opaque red, right half fully transparent.
     vv_media::test_support::ffmpeg(
@@ -608,8 +607,7 @@ fn mix_audio_track_is_silence_when_no_audio_track_has_clips() {
 /// nested timeline.
 #[test]
 fn mix_audio_track_recurses_into_a_compound_clips_nested_timeline() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("compound_audio_source.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -730,8 +728,7 @@ fn mix_audio_track_recurses_into_a_compound_clips_nested_timeline() {
 /// player side, not in this export).
 #[test]
 fn export_keeps_video_and_audio_frame_accurate_at_a_fractional_ntsc_fps() {
-    let dir = std::env::temp_dir().join("vv-app-diag-avsync-frac");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-diag-avsync-frac");
     let beep_path = dir.join("beep.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -893,8 +890,10 @@ fn preferred_settings_pick_the_faster_encoders_only_when_available() {
 /// correction and at 880 Hz without.
 #[test]
 fn mix_audio_track_plays_a_faster_clip_with_or_without_its_pitch() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("speed_source.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -974,8 +973,7 @@ fn mix_audio_track_plays_a_faster_clip_with_or_without_its_pitch() {
 /// A range is resampled like the whole file.
 #[test]
 fn mix_audio_track_of_a_range_is_the_same_part_of_the_whole_mix() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("range_source.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -1359,4 +1357,59 @@ fn bench_processing_precision() {
             }
         }
     }
+}
+
+fn timeline_with_plugin(enabled: bool, audio_clip: bool) -> Timeline {
+    let mut audio = Track::new(TrackKind::Audio);
+    if audio_clip {
+        audio.clips.push(solid_color_clip(1, 0, 10, Rgba::BLACK));
+    }
+    let mut timeline = timeline_with(vec![audio]);
+    let mut effect = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(
+        vv_plugin::testing::fixture_effect_of("0123456789ABCDEF0123456789ABCDEF", &[]),
+    ));
+    effect.enabled = enabled;
+    timeline.master.effects.push(effect);
+    timeline
+}
+
+fn project_with(timeline: Timeline) -> (Project, TimelineId) {
+    let mut project = Project::default();
+    let id = project.timelines.insert(timeline);
+    (project, id)
+}
+
+#[test]
+fn a_scan_blocks_only_an_audio_export_that_plays_an_enabled_plugin() {
+    let blocks = |timeline, audio| {
+        let (project, id) = project_with(timeline);
+        scan_blocks_export(true, &project, id, audio)
+    };
+    let (playing, id) = project_with(timeline_with_plugin(true, true));
+    assert!(scan_blocks_export(true, &playing, id, true));
+    assert!(!scan_blocks_export(false, &playing, id, true));
+    assert!(!blocks(timeline_with_plugin(true, true), false));
+    assert!(!blocks(timeline_with_plugin(false, true), true));
+    assert!(!blocks(timeline_with_plugin(true, false), true));
+    assert!(!blocks(timeline_with(vec![]), true));
+}
+
+#[test]
+fn a_scan_blocks_an_export_whose_compound_holds_an_enabled_plugin() {
+    let (mut project, inner) = project_with(timeline_with_plugin(true, true));
+    let item = project.timeline_item(inner, &project.timelines[inner].clone(), None);
+    let media = project.media_pool.insert(item);
+    let mut audio = Track::new(TrackKind::Audio);
+    audio.clips.push(Clip::from_source_range(
+        ClipId(2),
+        ClipSource::Media(media),
+        0,
+        10,
+        0,
+        vv_core::Rational::one(),
+    ));
+    let outer = project.timelines.insert(timeline_with(vec![audio]));
+
+    assert!(scan_blocks_export(true, &project, outer, true));
+    assert!(!scan_blocks_export(false, &project, outer, true));
 }

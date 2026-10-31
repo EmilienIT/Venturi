@@ -5,6 +5,8 @@ members = [
     "crates/vv-media",
     "crates/vv-render",
     "crates/vv-audio",
+    "crates/vv-plugin",
+    "crates/vv-plugin-fixture",
     "crates/vv-session",
     "crates/vv-vad",
     "crates/vv-mcp",
@@ -13,7 +15,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.8.1"
+version = "0.8.2"
 license = "GPL-3.0-or-later"
 
 [workspace.lints.clippy]

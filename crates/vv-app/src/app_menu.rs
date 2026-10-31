@@ -5,6 +5,7 @@ use super::*;
 const DISCORD_INVITE: &str = "https://discord.gg/3v2xjXFnZv";
 
 impl VenturiApp {
+    /// Handles configured keyboard shortcuts using the current UI frame.
     pub(crate) fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
         // Copy/paste are handled outside `ui.input`: `ctx.copy_text` takes
         // the same lock and would deadlock inside it.
@@ -14,6 +15,8 @@ impl VenturiApp {
         // Keys typed into a text field (e.g. the title) are not shortcuts:
         // "T" would cut the clips, Backspace would delete them.
         let typing = ui.ctx().egui_wants_keyboard_input();
+        // An open menu owns the keyboard: its letters jump to items.
+        let menu_open = egui::Popup::is_any_open(ui.ctx());
         if let Some(timeline_id) = self.timeline_id {
             self.timeline_state
                 .drop_locked(&self.session.project.timelines[timeline_id]);
@@ -36,7 +39,7 @@ impl VenturiApp {
             arrow_input.1 = i.time;
             // Mouse "back" button, as in a web browser.
             exit_compound = i.pointer.button_pressed(egui::PointerButton::Extra1);
-            if typing || capturing_shortcut {
+            if typing || capturing_shortcut || menu_open {
                 return;
             }
             let pressed = |action| keymap.pressed(action, i);
@@ -220,6 +223,25 @@ impl VenturiApp {
         }
     }
 
+    /// Requests a normal close of the application's root viewport via `ctx`.
+    ///
+    /// The window close lifecycle remains responsible for saving session state
+    /// and handling any unsaved changes.
+    fn request_exit(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Draws the File menu's Exit item and requests a normal viewport close.
+    fn show_exit_menu_item(&self, ui: &mut egui::Ui) -> egui::Response {
+        let response = ui.button(t!("menu.exit"));
+        if response.clicked() {
+            self.request_exit(ui.ctx());
+            ui.close();
+        }
+        response
+    }
+
+    /// Displays the top menu bar in `ui` and dispatches selected menu actions.
     pub(crate) fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         let keymap = self.settings.keymap.clone();
         let mut set_fullscreen = None;
@@ -314,6 +336,8 @@ impl VenturiApp {
                             self.open_settings(settings_dialog::Section::General);
                             ui.close();
                         }
+                        ui.separator();
+                        self.show_exit_menu_item(ui);
                     })
                     .response,
                 );
@@ -502,6 +526,19 @@ impl VenturiApp {
                             self.add_marker_at_playhead();
                             ui.close();
                         }
+                        let can_mark = self.mark_target_frames() > 0;
+                        for (action, is_in) in [(Action::MarkIn, true), (Action::MarkOut, false)] {
+                            if ui
+                                .add_enabled(
+                                    can_mark,
+                                    egui::Button::new(keymap.menu_label(&action.label(), action)),
+                                )
+                                .clicked()
+                            {
+                                self.mark_at_playhead(is_in);
+                                ui.close();
+                            }
+                        }
                     })
                     .response,
                 );
@@ -631,19 +668,19 @@ impl VenturiApp {
         let mut chosen = None;
         ui.add_enabled_ui(!recent.is_empty(), |ui| {
             ui.menu_button(t!("menu.recent_projects"), |ui| {
-                for path in &recent {
-                    let label = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string());
-                    if ui
-                        .button(label)
-                        .on_hover_text(path.display().to_string())
-                        .clicked()
-                    {
-                        chosen = Some(path.clone());
+                menu_list::menu_list(ui, |ui, type_ahead| {
+                    for path in &recent {
+                        let label = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        let response = ui.button(&label).on_hover_text(path.display().to_string());
+                        type_ahead.item(&response, &label);
+                        if response.clicked() {
+                            chosen = Some(path.clone());
+                        }
                     }
-                }
+                });
             });
         });
         if let Some(path) = chosen {
@@ -706,19 +743,19 @@ impl VenturiApp {
         let mut jump = None;
         ui.add_enabled_ui(!labels.is_empty(), |ui| {
             ui.menu_button(t!("menu.undo_history"), |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(400.0)
-                    .show(ui, |ui| {
-                        for position in (0..=labels.len()).rev() {
-                            let text = match position {
-                                0 => t!("history.original"),
-                                _ => command_label(labels[position - 1]),
-                            };
-                            if ui.radio(position == current, text).clicked() {
-                                jump = Some(position);
-                            }
+                menu_list::menu_list(ui, |ui, type_ahead| {
+                    for position in (0..=labels.len()).rev() {
+                        let text = match position {
+                            0 => t!("history.original"),
+                            _ => command_label(labels[position - 1]),
+                        };
+                        let response = ui.radio(position == current, text.as_ref());
+                        type_ahead.item(&response, &text);
+                        if response.clicked() {
+                            jump = Some(position);
                         }
-                    });
+                    }
+                });
             });
         });
         if let Some(position) = jump {
@@ -819,3 +856,7 @@ fn switch_bar_menu_on_hover(ctx: &egui::Context, bar_menus: &[egui::Response]) {
         ctx.request_repaint();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/app_menu.rs"]
+mod tests;

@@ -6,7 +6,7 @@
 use ffmpeg::channel_layout::ChannelLayout;
 use ffmpeg::format::sample::{Sample as SampleFormat, Type as SampleType};
 use ffmpeg_next as ffmpeg;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 
 static INIT: Once = Once::new();
 
@@ -16,7 +16,7 @@ fn ensure_init() {
     });
 }
 
-const CHUNK_FRAMES: usize = 4096;
+pub const STRETCH_CHUNK_FRAMES: usize = 4096;
 
 /// Duration multiplied by `1/tempo`, same rate and channels, pitch
 /// preserved.
@@ -42,6 +42,35 @@ pub struct Stretcher {
 }
 
 const FORMAT: SampleFormat = SampleFormat::F32(SampleType::Packed);
+
+/// Whether this FFmpeg has the `rubberband` filter (Homebrew's build does not).
+pub fn rubberband_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        ensure_init();
+        ffmpeg::filter::find("rubberband").is_some()
+    })
+}
+
+/// For the tests that need `rubberband`: true when they must be skipped
+/// because it is missing. Never true under CI (`CI` set), so a missing
+/// filter fails there.
+#[doc(hidden)]
+pub fn skip_without_rubberband() -> bool {
+    static NOTE: Once = Once::new();
+    if rubberband_available() || std::env::var_os("CI").is_some() {
+        return false;
+    }
+    // Straight to stderr: the test harness hides `eprintln!` of passing tests.
+    NOTE.call_once(|| {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "skipped: FFmpeg has no rubberband filter (see docs/BUILDING.md)"
+        );
+    });
+    true
+}
 
 impl Stretcher {
     pub fn new(sample_rate: u32, channels: u16, tempo: f64) -> Result<Self, String> {
@@ -95,7 +124,7 @@ impl Stretcher {
     /// Interleaved; appends to `out` what is stretched so far.
     pub fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<(), String> {
         let ch = self.channels;
-        for chunk in samples.chunks(CHUNK_FRAMES * ch) {
+        for chunk in samples.chunks(STRETCH_CHUNK_FRAMES * ch) {
             let n = chunk.len() / ch;
             let mut frame = ffmpeg::frame::Audio::new(FORMAT, n, self.layout);
             frame.set_rate(self.sample_rate);

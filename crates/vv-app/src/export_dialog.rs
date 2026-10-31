@@ -18,6 +18,8 @@ pub struct TimelineInfo {
     /// In/out range, `None` if it covers the whole timeline.
     pub marks: Option<(FrameIdx, FrameIdx)>,
     pub has_audio: bool,
+    /// The first plugin scan runs and the timeline's audio plays plugins.
+    pub waits_for_scan: bool,
 }
 
 pub enum ExportDialogAction {
@@ -203,6 +205,7 @@ impl ExportDialog {
                     "export.range_whole",
                     duration = format_duration(info.total_frames, fps)
                 ));
+                ui.label(t!("export.range_mark_hint"));
             }
         }
     }
@@ -431,9 +434,13 @@ impl ExportDialog {
     fn buttons(&mut self, ui: &mut egui::Ui, info: &TimelineInfo) -> ExportDialogAction {
         let path = validate_path(&self.path_text);
         let mut action = ExportDialogAction::None;
+        let waits = info.waits_for_scan && self.settings.audio.is_some();
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(path.is_ok(), egui::Button::new(t!("export.start")))
+                .add_enabled(
+                    path.is_ok() && !waits,
+                    egui::Button::new(t!("export.start")),
+                )
                 .clicked()
                 && let Ok(path) = path
             {
@@ -447,6 +454,9 @@ impl ExportDialog {
             }
             if ui.button(t!("common.cancel")).clicked() {
                 action = ExportDialogAction::Cancel;
+            }
+            if waits {
+                ui.weak(t!("mixer.vst3_scanning"));
             }
         });
         action
