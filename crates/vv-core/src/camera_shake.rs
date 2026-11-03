@@ -72,6 +72,10 @@ impl Default for CameraShakeTracks {
 }
 
 impl CameraShakeTracks {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
     pub fn track(&self, param: ShakeParam) -> &Keyframed<f32> {
         &self.params[param.index()]
     }
@@ -154,7 +158,7 @@ impl CameraShakeTracks {
 
 mod param_tracks {
     use super::*;
-    use serde::de::{MapAccess, SeqAccess, Visitor};
+    use serde::de::{MapAccess, Visitor};
 
     pub fn serialize<S: serde::Serializer>(
         params: &[Keyframed<f32>; 7],
@@ -171,7 +175,7 @@ mod param_tracks {
             type Value = [Keyframed<f32>; 7];
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("named camera shake tracks or a legacy track array")
+                formatter.write_str("named camera shake tracks")
             }
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
@@ -181,28 +185,8 @@ mod param_tracks {
                 }
                 Ok(params)
             }
-
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut params = CameraShakeTracks::default().params;
-                // Preserve the original positional format independently of enum order.
-                for param in [
-                    ShakeParam::MotionScale,
-                    ShakeParam::Speed,
-                    ShakeParam::Pan,
-                    ShakeParam::Tilt,
-                    ShakeParam::Rotation,
-                    ShakeParam::Zoom,
-                    ShakeParam::Smoothness,
-                ] {
-                    let Some(track) = seq.next_element()? else {
-                        break;
-                    };
-                    params[param.index()] = track;
-                }
-                Ok(params)
-            }
         }
-        deserializer.deserialize_any(TracksVisitor)
+        deserializer.deserialize_map(TracksVisitor)
     }
 }
 

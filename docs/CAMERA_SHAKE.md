@@ -40,6 +40,5 @@ leave uncovered areas. It does not synthesize pixels or apply motion blur.
 
 The native project format and Venturi's OTIO metadata preserve the effect.
 Parameters are saved by name; missing parameters load with their defaults.
-Projects saved with the original positional tracks can still be opened.
 Other editors do not receive a native Camera Shake effect or baked
 keyframes through OTIO.

@@ -243,33 +243,14 @@ fn named_tracks_round_trip_and_missing_parameters_keep_their_defaults() {
 }
 
 #[test]
-fn positional_tracks_from_the_first_version_still_load() {
-    let mut shake = CameraShakeTracks::default();
-    shake.seed = 17;
-    shake.auto_zoom = false;
-    shake
-        .track_mut(ShakeParam::Pan)
-        .upsert(12, 2.5, Interpolation::EaseInOut);
-    let legacy = format!(
-        "(params:{},seed:17,auto_zoom:false)",
-        ron::to_string(&shake.params).unwrap()
-    );
-    assert_eq!(ron::from_str::<CameraShakeTracks>(&legacy).unwrap(), shake);
-    let legacy = serde_json::json!({"params": shake.params, "seed": 17, "auto_zoom": false});
-    assert_eq!(
-        serde_json::from_value::<CameraShakeTracks>(legacy).unwrap(),
-        shake
-    );
-}
-
-#[test]
-fn shake_settings_are_only_written_for_camera_shake_filters() {
+fn default_shake_settings_are_omitted_and_changed_settings_round_trip() {
     for kind in [
         FilterKind::BoxBlur,
         FilterKind::GaussianBlur,
         FilterKind::DropShadow,
         FilterKind::Exposure,
         FilterKind::ColorCorrection,
+        FilterKind::CameraShake,
     ] {
         let filter = ClipFilter::new(kind);
         let json = serde_json::to_value(&filter).unwrap();
@@ -277,8 +258,21 @@ fn shake_settings_are_only_written_for_camera_shake_filters() {
         let ron = ron::to_string(&filter).unwrap();
         assert!(!ron.contains("shake:"), "{ron}");
         assert_eq!(ron::from_str::<ClipFilter>(&ron).unwrap(), filter);
+        let mut filter = filter;
+        filter.shake.seed = 17;
+        filter
+            .shake
+            .track_mut(ShakeParam::Pan)
+            .upsert(12, 2.5, Interpolation::EaseInOut);
+        let json = serde_json::to_value(&filter).unwrap();
+        assert_eq!(serde_json::from_value::<ClipFilter>(json).unwrap(), filter);
+        assert_eq!(
+            ron::from_str::<ClipFilter>(&ron::to_string(&filter).unwrap()).unwrap(),
+            filter
+        );
     }
-    let filter = ClipFilter::new(FilterKind::CameraShake);
+    let mut filter = ClipFilter::new(FilterKind::CameraShake);
+    filter.shake.seed = 17;
     let json = serde_json::to_value(&filter).unwrap();
     for param in ShakeParam::ALL {
         let name = serde_json::to_value(param).unwrap();
