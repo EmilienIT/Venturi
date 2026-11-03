@@ -65,9 +65,6 @@ the part that has to be perfect.
   with custom curves.
 - **Titles, solid colours, filters, transitions.** Applied straight from the
   timeline, no node graph to wire up.
-- **Camera Shake.** Repeatable handheld motion with keyframed strength,
-  speed, pan, tilt, rotation, zoom and smoothness, plus a seed and edge
-  compensation. See [the controls](docs/CAMERA_SHAKE.md).
 - **Color correction.** Shadows, midtones, highlights and offset wheels,
   auto balance and GPU scopes (waveform, RGB parade, vectorscope,
   histogram), composed in 16-bit float.
@@ -79,6 +76,10 @@ the part that has to be perfect.
   own or in the window you are editing. See [docs/MCP.md](docs/MCP.md).
 - **Linux first.** Developed and tested on Linux, not ported to it. Also runs
   on Apple Silicon Macs, and possibly Windows.
+
+Camera Shake adds repeatable handheld motion with keyframed strength, speed,
+pan, tilt, rotation, zoom and smoothness, plus a seed and edge compensation.
+See [the controls](docs/CAMERA_SHAKE.md).
 
 ## Install
 
