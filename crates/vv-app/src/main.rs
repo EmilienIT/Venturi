@@ -2860,7 +2860,7 @@ impl VenturiApp {
         self.sync_selection_to_playhead();
     }
 
-    /// Del/Backspace on the media pool: removes the selected media. The clips
+    /// Removes the pool selection from the menu or Del/Backspace. The clips
     /// using them stay on the timeline and become offline (see
     /// `vv_core::RemoveMedia`).
     fn delete_selected_media(&mut self) {

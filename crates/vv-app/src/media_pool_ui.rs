@@ -341,7 +341,11 @@ impl PoolMenus<MediaId, FolderId> for ProjectMenus {
             ui.close();
         }
         ui.separator();
-        if ui.button(t!("menu.delete")).clicked() {
+        if ui
+            .button(t!("pool.delete_selected", count = selected))
+            .on_hover_text(t!("pool.delete_selected_hint"))
+            .clicked()
+        {
             out.push(MenuChoice::Action(ProjectAction::Delete));
             ui.close();
         }

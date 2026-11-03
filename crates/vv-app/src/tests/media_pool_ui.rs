@@ -15,114 +15,128 @@ fn timeline_item(app: &VenturiApp, timeline_id: vv_core::TimelineId) -> MediaId 
 fn context_menu_deletes_the_selection_and_undo_restores_it() {
     use media_pool::PoolLayout;
 
-    for layout in [PoolLayout::Details, PoolLayout::List, PoolLayout::Grid] {
-        for timeline_target in [false, true] {
-            for selection in [0, 1, 2] {
-                let mut app = VenturiApp::default();
-                let timeline = app.ensure_timeline();
-                let timeline_media = timeline_item(&app, timeline);
-                let mut item = app.session.project.media_pool[timeline_media].clone();
-                item.path = "footage.mp4".into();
-                item.compound = None;
-                let media = app.session.project.media_pool.insert(item);
-                let target = if timeline_target {
-                    timeline_media
-                } else {
-                    media
-                };
-                let other = if timeline_target {
-                    media
-                } else {
-                    timeline_media
-                };
-                let name = file_label(&app.session.project.media_pool[target].path);
-                let selected = match selection {
-                    0 => vec![other],
-                    1 => vec![target],
-                    _ => vec![target, other],
-                };
-                let removed = if selection == 2 {
-                    vec![target, other]
-                } else {
-                    vec![target]
-                };
-                app.media_pool_state.select_only(selected);
-                app.settings.panels.media_pool_layout = layout;
-                app.session.mark_saved();
+    struct RestoreLocale(String);
+    impl Drop for RestoreLocale {
+        fn drop(&mut self) {
+            rust_i18n::set_locale(&self.0);
+        }
+    }
+    let _locale = RestoreLocale(rust_i18n::locale().to_string());
+    for locale in ["en", "it"] {
+        rust_i18n::set_locale(locale);
+        for layout in [PoolLayout::Details, PoolLayout::List, PoolLayout::Grid] {
+            for timeline_target in [false, true] {
+                for selection in [0, 1, 2] {
+                    let mut app = VenturiApp::default();
+                    let timeline = app.ensure_timeline();
+                    let timeline_media = timeline_item(&app, timeline);
+                    let mut item = app.session.project.media_pool[timeline_media].clone();
+                    item.path = "footage.mp4".into();
+                    item.compound = None;
+                    let media = app.session.project.media_pool.insert(item);
+                    let target = if timeline_target {
+                        timeline_media
+                    } else {
+                        media
+                    };
+                    let other = if timeline_target {
+                        media
+                    } else {
+                        timeline_media
+                    };
+                    let name = file_label(&app.session.project.media_pool[target].path);
+                    let selected = match selection {
+                        0 => vec![other],
+                        1 => vec![target],
+                        _ => vec![target, other],
+                    };
+                    let removed = if selection == 2 {
+                        vec![target, other]
+                    } else {
+                        vec![target]
+                    };
+                    app.media_pool_state.select_only(selected);
+                    app.settings.panels.media_pool_layout = layout;
+                    app.session.mark_saved();
 
-                let ctx = egui::Context::default();
-                let mut time = 0.0;
-                let mut frame = |app: &mut VenturiApp, events| {
-                    let mut input = column_input(events);
-                    input.time = Some(time);
-                    time += 1.0 / 60.0;
-                    let mut output = ctx.run_ui(input, |ui| {
-                        app.show_project_pool(ui, &mut None);
-                    });
-                    output.textures_delta.clear();
-                    output
-                };
-                let text_position = |output: &egui::FullOutput, label: &str| {
-                    output
-                        .shapes
-                        .iter()
-                        .find_map(|shape| match &shape.shape {
-                            egui::Shape::Text(text) if text.galley.text() == label => {
-                                Some(text.pos + text.galley.size() / 2.0)
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| panic!("{label:?} is visible in {layout:?}"))
-                };
-                let button = |pos, button, pressed| egui::Event::PointerButton {
-                    pos,
-                    button,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                };
-                let output = frame(&mut app, vec![]);
-                let position = text_position(&output, &name);
-                frame(&mut app, vec![egui::Event::PointerMoved(position)]);
-                frame(
-                    &mut app,
-                    vec![button(position, egui::PointerButton::Secondary, true)],
-                );
-                frame(
-                    &mut app,
-                    vec![button(position, egui::PointerButton::Secondary, false)],
-                );
-                let output = frame(&mut app, vec![]);
-                let position = text_position(&output, &t!("menu.delete"));
-                assert_eq!(
-                    app.media_pool_state.selected,
-                    removed.iter().copied().collect()
-                );
-                frame(&mut app, vec![egui::Event::PointerMoved(position)]);
-                frame(
-                    &mut app,
-                    vec![button(position, egui::PointerButton::Primary, true)],
-                );
-                frame(
-                    &mut app,
-                    vec![button(position, egui::PointerButton::Primary, false)],
-                );
+                    let ctx = egui::Context::default();
+                    ctx.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+                    let mut time = 0.0;
+                    let mut frame = |app: &mut VenturiApp, events| {
+                        let mut input = column_input(events);
+                        input.time = Some(time);
+                        time += 1.0 / 60.0;
+                        let mut output = ctx.run_ui(input, |ui| {
+                            app.show_project_pool(ui, &mut None);
+                        });
+                        output.textures_delta.clear();
+                        output
+                    };
+                    let text_position = |output: &egui::FullOutput, label: &str| {
+                        output
+                            .shapes
+                            .iter()
+                            .find_map(|shape| match &shape.shape {
+                                egui::Shape::Text(text) if text.galley.text() == label => {
+                                    Some(text.pos + text.galley.size() / 2.0)
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| panic!("{label:?} is visible in {layout:?}"))
+                    };
+                    let button = |pos, button, pressed| egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    };
+                    let output = frame(&mut app, vec![]);
+                    let position = text_position(&output, &name);
+                    frame(&mut app, vec![egui::Event::PointerMoved(position)]);
+                    frame(
+                        &mut app,
+                        vec![button(position, egui::PointerButton::Secondary, true)],
+                    );
+                    frame(
+                        &mut app,
+                        vec![button(position, egui::PointerButton::Secondary, false)],
+                    );
+                    let output = frame(&mut app, vec![]);
+                    let position =
+                        text_position(&output, &t!("pool.delete_selected", count = removed.len()));
+                    assert_eq!(
+                        app.media_pool_state.selected,
+                        removed.iter().copied().collect()
+                    );
+                    frame(&mut app, vec![egui::Event::PointerMoved(position)]);
+                    let output = frame(&mut app, vec![]);
+                    text_position(&output, &t!("pool.delete_selected_hint"));
+                    frame(
+                        &mut app,
+                        vec![button(position, egui::PointerButton::Primary, true)],
+                    );
+                    frame(
+                        &mut app,
+                        vec![button(position, egui::PointerButton::Primary, false)],
+                    );
 
-                for &id in &removed {
-                    assert!(!app.session.project.media_pool.contains_key(id));
+                    for &id in &removed {
+                        assert!(!app.session.project.media_pool.contains_key(id));
+                    }
+                    assert_eq!(app.session.project.media_pool.len(), 2 - removed.len());
+                    assert!(app.media_pool_state.selected.is_empty());
+                    assert!(app.session.has_unsaved_changes());
+                    assert_eq!(
+                        app.session.project.timelines.contains_key(timeline),
+                        !removed.contains(&timeline_media)
+                    );
+                    assert!(!egui::Popup::is_any_open(&ctx));
+
+                    app.undo();
+                    assert!(app.session.project.media_pool.contains_key(media));
+                    assert!(app.session.project.media_pool.contains_key(timeline_media));
+                    assert!(app.session.project.timelines.contains_key(timeline));
                 }
-                assert_eq!(app.session.project.media_pool.len(), 2 - removed.len());
-                assert!(app.media_pool_state.selected.is_empty());
-                assert!(app.session.has_unsaved_changes());
-                assert_eq!(
-                    app.session.project.timelines.contains_key(timeline),
-                    !removed.contains(&timeline_media)
-                );
-                assert!(!egui::Popup::is_any_open(&ctx));
-
-                app.undo();
-                assert!(app.session.project.media_pool.contains_key(media));
-                assert!(app.session.project.media_pool.contains_key(timeline_media));
-                assert!(app.session.project.timelines.contains_key(timeline));
             }
         }
     }

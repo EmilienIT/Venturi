@@ -60,6 +60,14 @@ pool.relink_many:
   en: "Relink %{count} selected clips..."
   it: "Relink %{count} clip selezionate..."
 
+pool.delete_selected:
+  en: "Delete from project (%{count})"
+  it: "Elimina dal progetto (%{count})"
+
+pool.delete_selected_hint:
+  en: "Removes the entire selection from the project. Clips using deleted media go offline; selected timelines are removed too. Undo restores the items."
+  it: "Rimuove l'intera selezione dal progetto. Le clip che usano i media eliminati diventano offline; vengono rimosse anche le timeline selezionate. Annulla ripristina gli elementi."
+
 pool.relink_one:
   en: "Relink clip..."
   it: "Relink clip..."
