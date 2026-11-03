@@ -60,7 +60,9 @@ fn context_menu_deletes_the_selection_and_undo_restores_it() {
                     app.session.mark_saved();
 
                     let ctx = egui::Context::default();
-                    ctx.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+                    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                        ctx.style_mut_of(theme, |style| style.interaction.tooltip_delay = 0.0);
+                    }
                     let mut time = 0.0;
                     let mut frame = |app: &mut VenturiApp, events| {
                         let mut input = column_input(events);
