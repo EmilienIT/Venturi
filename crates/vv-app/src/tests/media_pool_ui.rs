@@ -111,8 +111,12 @@ fn context_menu_deletes_the_selection_and_undo_restores_it() {
                         removed.iter().copied().collect()
                     );
                     frame(&mut app, vec![egui::Event::PointerMoved(position)]);
-                    let output = frame(&mut app, vec![]);
-                    text_position(&output, &t!("pool.delete_selected_hint"));
+                    let hint = t!("pool.delete_selected_hint");
+                    assert!((0..40).any(|_| {
+                        frame(&mut app, vec![]).shapes.iter().any(|shape| {
+                            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == hint.as_ref())
+                        })
+                    }), "the localized deletion consequence is visible on hover");
                     frame(
                         &mut app,
                         vec![button(position, egui::PointerButton::Primary, true)],
