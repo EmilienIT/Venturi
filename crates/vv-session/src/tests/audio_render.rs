@@ -2402,8 +2402,9 @@ fn a_level_gone_before_the_read_back_is_measured_again() {
         }
     }
 
+    let dir = TempDir::new("vv-missing-level-fallback");
     let mut project = Project::default();
-    let tl = echoed_gap(&mut project, "fallback.wav", false);
+    let tl = echoed_gap(&dir, &mut project, "fallback.wav", false);
     let mut cache = echo_cache();
     let mut source = Fallback {
         cache: &mut cache,
