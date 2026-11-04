@@ -483,7 +483,7 @@ struct SharedLevels {
 struct LevelsState {
     parts: HashMap<u64, CachedParts>,
     /// Generations distinguish a forgotten key from a later insertion.
-    droppable: VecDeque<(u64, u64)>,
+    droppable: std::collections::VecDeque<(u64, u64)>,
     queued: HashMap<u64, u64>,
     generation: u64,
     /// `cached_bytes` of the parts in `parts`.
