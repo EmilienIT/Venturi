@@ -21,8 +21,9 @@ fn with_missing_level_analysis(check: impl FnMut(&LevelAnalysis, &mut LevelCache
             LevelReading::Ready(1.0)
         }
     }
+    let dir = TempDir::new("vv-missing-level-claims");
     let mut project = Project::default();
-    let tl = echoed_gap(&mut project, "missing-level-claims.wav", false);
+    let tl = echoed_gap(&dir, &mut project, "missing-level-claims.wav", false);
     let mut cache = echo_cache();
     let mut source = Probe {
         cache: &mut cache,
@@ -42,18 +43,8 @@ fn with_missing_level_analysis(check: impl FnMut(&LevelAnalysis, &mut LevelCache
 #[test]
 fn missing_level_parts_release_claims_after_cancellation_and_can_be_retried() {
     with_missing_level_analysis(|analysis, cache| {
-        struct Directory(PathBuf);
-        impl Drop for Directory {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let root = Directory(std::env::temp_dir().join(
-            format!("vv-missing-claims-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()),
-        ));
-        std::fs::create_dir(&root.0).unwrap();
-        cache.dir = Some(root.0.clone());
+        let dir = TempDir::new("vv-missing-claims-disk");
+        cache.dir = Some(dir.path().to_path_buf());
         assert!(measure_level(analysis, cache).unwrap().is_finite());
         for segment in &analysis.segments {
             let path = cache.path(segment.key).unwrap();
@@ -120,6 +111,21 @@ fn missing_level_parts_wait_for_other_measurements() {
                 .unwrap();
             assert_eq!(found.len(), parts.len());
         });
+    });
+}
+
+#[test]
+fn initial_level_measurements_release_claims_after_cancellation() {
+    with_missing_level_analysis(|analysis, cache| {
+        let stop = Arc::new(AtomicBool::new(true));
+        cache.cancel = Some(stop.clone());
+        assert!(matches!(
+            measure_level(analysis, cache),
+            Err(ExportError::Cancelled)
+        ));
+        assert!(cache.shared.state.lock().unwrap().measuring.is_empty());
+        stop.store(false, Ordering::Relaxed);
+        assert!(measure_level(analysis, cache).unwrap().is_finite());
     });
 }
 use vv_audio::mixer::ClipInput;
@@ -2146,6 +2152,52 @@ fn forgetting_a_part_drops_its_bytes_and_its_place_in_the_queue() {
 }
 
 #[test]
+fn a_forgotten_queue_record_does_not_evict_a_new_generation() {
+    for persisted in [false, true] {
+        let peak = || CachedParts {
+            parts: LevelParts::Peak(0.5),
+            sources: None,
+        };
+        let one = cached_bytes(&peak());
+        let mut state = LevelsState::default();
+        for key in 1..=3 {
+            remember(&mut state, 3 * one, key, peak(), true);
+        }
+        forget(&mut state, 1);
+        remember(&mut state, 3 * one, 1, peak(), persisted);
+        remember(&mut state, 3 * one, 4, peak(), true);
+        assert!(
+            state.parts.contains_key(&1),
+            "reinserted key was evicted: {persisted}"
+        );
+        assert!(
+            !state.parts.contains_key(&2),
+            "oldest persisted key must go"
+        );
+        assert_eq!(state.bytes, 3 * one);
+    }
+}
+
+#[test]
+fn forgetting_many_level_keys_keeps_the_eviction_queue_bounded() {
+    let peak = || CachedParts {
+        parts: LevelParts::Peak(0.5),
+        sources: None,
+    };
+    let one = cached_bytes(&peak());
+    let mut state = LevelsState::default();
+    remember(&mut state, usize::MAX, 0, peak(), true);
+    for key in 1..4096 {
+        remember(&mut state, usize::MAX, key, peak(), true);
+        forget(&mut state, key);
+        assert!(state.droppable.len() <= 2 * state.queued.len());
+    }
+    assert_eq!(state.parts.len(), 1);
+    assert_eq!(state.queued.len(), 1);
+    assert_eq!(state.bytes, one);
+}
+
+#[test]
 fn a_key_written_after_a_failed_write_joins_the_queue() {
     // A nested measure can `put` the same key twice: its first write may have
     // failed and the second succeeded, and the key must become droppable then.
@@ -2224,7 +2276,11 @@ fn a_written_level_is_the_droppable_one() {
     cache.put(1, &part, Some(std::slice::from_ref(&stamp)), false);
     let state = cache.shared.state.lock().unwrap();
     assert_eq!(
-        state.droppable.iter().copied().collect::<Vec<_>>(),
+        state
+            .droppable
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>(),
         vec![1],
         "the file is there, so the session may drop it"
     );
