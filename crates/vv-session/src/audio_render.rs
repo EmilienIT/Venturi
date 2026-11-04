@@ -65,7 +65,7 @@ pub fn measure_level(
     analysis: &LevelAnalysis,
     levels: &mut LevelCache,
 ) -> Result<f32, ExportError> {
-    measure_segments(analysis, &analysis.segments, levels)?;
+    measure_segments(analysis, &analysis.segments, levels.threads, levels)?;
     let parts = match collect_parts(analysis, levels) {
         Some(parts) => parts,
         // Another process may prune an evicted part before it is read back.
@@ -77,6 +77,7 @@ pub fn measure_level(
 fn measure_segments(
     analysis: &LevelAnalysis,
     segments: &[LevelSegment],
+    threads: usize,
     levels: &mut LevelCache,
 ) -> Result<(), ExportError> {
     let (mine, theirs) = levels.claim(segments);
@@ -90,9 +91,9 @@ fn measure_segments(
     } else {
         (mine.clone(), theirs)
     };
-    let runs = runs(&to_measure, levels.threads);
+    let runs = runs(&to_measure, threads);
     let holding = std::mem::replace(&mut levels.holding, true);
-    let measured = if levels.threads <= 1 || runs.len() <= 1 {
+    let measured = if threads <= 1 || runs.len() <= 1 {
         runs.iter()
             .try_for_each(|run| measure_run(analysis, run, levels))
     } else {
@@ -128,7 +129,7 @@ fn measure_missing(
         .filter(|segment| levels.get(segment.key).is_none())
         .cloned()
         .collect();
-    measure_segments(analysis, &missing, levels)?;
+    measure_segments(analysis, &missing, 1, levels)?;
     collect_parts(analysis, levels)
         .ok_or_else(|| ExportError::Failed("a segment was not measured".into()))
 }
