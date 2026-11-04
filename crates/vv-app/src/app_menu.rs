@@ -99,6 +99,15 @@ impl VenturiApp {
             if pressed(Action::MarkOut) {
                 self.mark_at_playhead(false);
             }
+            if pressed(Action::ClearIn) {
+                self.clear_in_point();
+            }
+            if pressed(Action::ClearOut) {
+                self.clear_out_point();
+            }
+            if pressed(Action::ClearInOut) {
+                self.clear_in_and_out();
+            }
             if pressed(Action::FastPlayback) {
                 self.handle_fast_playback_key();
             }
@@ -222,6 +231,25 @@ impl VenturiApp {
         }
     }
 
+    /// Requests a normal close of the application's root viewport via `ctx`.
+    ///
+    /// The window close lifecycle remains responsible for saving session state
+    /// and handling any unsaved changes.
+    fn request_exit(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Draws the File menu's Exit item and requests a normal viewport close.
+    fn show_exit_menu_item(&self, ui: &mut egui::Ui) -> egui::Response {
+        let response = ui.button(t!("menu.exit"));
+        if response.clicked() {
+            self.request_exit(ui.ctx());
+            ui.close();
+        }
+        response
+    }
+
+    /// Displays the top menu bar in `ui` and dispatches selected menu actions.
     pub(crate) fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         let keymap = self.settings.keymap.clone();
         let mut set_fullscreen = None;
@@ -316,6 +344,8 @@ impl VenturiApp {
                             self.open_settings(settings_dialog::Section::General);
                             ui.close();
                         }
+                        ui.separator();
+                        self.show_exit_menu_item(ui);
                     })
                     .response,
                 );
@@ -503,6 +533,48 @@ impl VenturiApp {
                         {
                             self.add_marker_at_playhead();
                             ui.close();
+                        }
+                        let (can_mark, marks) = self
+                            .mark_target()
+                            .map(|target| (target.total > 0, Some(*target.marks)))
+                            .unwrap_or((false, None));
+                        for (action, is_in) in [(Action::MarkIn, true), (Action::MarkOut, false)] {
+                            if ui
+                                .add_enabled(
+                                    can_mark,
+                                    egui::Button::new(keymap.menu_label(&action.label(), action)),
+                                )
+                                .clicked()
+                            {
+                                self.mark_at_playhead(is_in);
+                                ui.close();
+                            }
+                        }
+                        let has_in = marks.is_some_and(|m| m.mark_in.is_some());
+                        let has_out = marks.is_some_and(|m| m.mark_out.is_some());
+                        for (action, enabled, clear) in [
+                            (
+                                Action::ClearIn,
+                                has_in,
+                                Self::clear_in_point as fn(&mut Self),
+                            ),
+                            (Action::ClearOut, has_out, Self::clear_out_point),
+                            (
+                                Action::ClearInOut,
+                                has_in || has_out,
+                                Self::clear_in_and_out,
+                            ),
+                        ] {
+                            if ui
+                                .add_enabled(
+                                    enabled,
+                                    egui::Button::new(keymap.menu_label(&action.label(), action)),
+                                )
+                                .clicked()
+                            {
+                                clear(self);
+                                ui.close();
+                            }
                         }
                     })
                     .response,
@@ -821,3 +893,7 @@ fn switch_bar_menu_on_hover(ctx: &egui::Context, bar_menus: &[egui::Response]) {
         ctx.request_repaint();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/app_menu.rs"]
+mod tests;

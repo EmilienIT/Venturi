@@ -20,6 +20,9 @@ pub enum Action {
     StepForward,
     MarkIn,
     MarkOut,
+    ClearIn,
+    ClearOut,
+    ClearInOut,
     FullscreenViewer,
     ViewerZoomFit,
     ViewerZoomActual,
@@ -54,13 +57,16 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 37] = [
+    pub const ALL: [Action; 40] = [
         Action::TogglePlayback,
         Action::FastPlayback,
         Action::StepBackward,
         Action::StepForward,
         Action::MarkIn,
         Action::MarkOut,
+        Action::ClearIn,
+        Action::ClearOut,
+        Action::ClearInOut,
         Action::FullscreenViewer,
         Action::ViewerZoomFit,
         Action::ViewerZoomActual,
@@ -103,6 +109,9 @@ impl Action {
             Action::StepForward => "step_forward",
             Action::MarkIn => "mark_in",
             Action::MarkOut => "mark_out",
+            Action::ClearIn => "clear_in",
+            Action::ClearOut => "clear_out",
+            Action::ClearInOut => "clear_in_out",
             Action::FullscreenViewer => "fullscreen_viewer",
             Action::ViewerZoomFit => "viewer_zoom_fit",
             Action::ViewerZoomActual => "viewer_zoom_actual",
@@ -141,6 +150,9 @@ impl Action {
         t!(format!("action.{}", self.id()))
     }
 
+    /// Returns the translated settings category for this action.
+    ///
+    /// The returned string is used to group shortcuts in the settings UI.
     pub fn category(self) -> Cow<'static, str> {
         match self {
             Action::TogglePlayback
@@ -149,6 +161,9 @@ impl Action {
             | Action::StepForward
             | Action::MarkIn
             | Action::MarkOut
+            | Action::ClearIn
+            | Action::ClearOut
+            | Action::ClearInOut
             | Action::FullscreenViewer
             | Action::ViewerZoomFit
             | Action::ViewerZoomActual => t!("action_category.playback"),
@@ -185,6 +200,7 @@ impl Action {
         }
     }
 
+    /// Returns the built-in keyboard shortcuts used when no custom binding exists.
     fn default_shortcuts(self) -> Vec<Shortcut> {
         use egui::Key;
         let plain = Shortcut::plain;
@@ -200,6 +216,18 @@ impl Action {
             Action::StepForward => vec![plain(Key::ArrowRight)],
             Action::MarkIn => vec![plain(Key::I)],
             Action::MarkOut => vec![plain(Key::O)],
+            Action::ClearIn => vec![Shortcut {
+                alt: true,
+                ..plain(Key::I)
+            }],
+            Action::ClearOut => vec![Shortcut {
+                alt: true,
+                ..plain(Key::O)
+            }],
+            Action::ClearInOut => vec![Shortcut {
+                alt: true,
+                ..plain(Key::X)
+            }],
             Action::FullscreenViewer => vec![ctrl(Key::F)],
             Action::ViewerZoomFit => vec![plain(Key::Z)],
             Action::ViewerZoomActual => vec![Shortcut {
@@ -911,7 +939,7 @@ impl Settings {
     }
 
     /// Missing or unreadable file = default settings; actions absent from
-    /// the file keep the default shortcuts.
+    /// the file keep unclaimed default shortcuts.
     pub fn load(path: &Path) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
             return Self::default();
@@ -1020,15 +1048,30 @@ impl Settings {
             media_pool_layout: file.panels.media_pool_layout.unwrap_or_default(),
             library_layout: file.panels.library_layout.unwrap_or_default(),
         };
-        for (id, shortcuts) in file.shortcuts {
-            let Some(action) = Action::from_id(&id) else {
+        let saved_bindings: BTreeMap<_, _> = file
+            .shortcuts
+            .into_iter()
+            .filter_map(|(id, shortcuts)| {
+                Action::from_id(&id).map(|action| {
+                    let shortcuts = shortcuts
+                        .iter()
+                        .filter_map(|s| Shortcut::from_config(s))
+                        .collect::<Vec<_>>();
+                    (action, shortcuts)
+                })
+            })
+            .collect();
+        let saved_shortcuts: Vec<_> = saved_bindings.values().flatten().copied().collect();
+        for (&action, shortcuts) in &saved_bindings {
+            settings.keymap.bindings.insert(action, shortcuts.clone());
+        }
+        for action in Action::ALL {
+            if saved_bindings.contains_key(&action) {
                 continue;
-            };
-            let parsed = shortcuts
-                .iter()
-                .filter_map(|s| Shortcut::from_config(s))
-                .collect();
-            settings.keymap.bindings.insert(action, parsed);
+            }
+            if let Some(shortcuts) = settings.keymap.bindings.get_mut(&action) {
+                shortcuts.retain(|shortcut| !saved_shortcuts.contains(shortcut));
+            }
         }
         settings
     }
