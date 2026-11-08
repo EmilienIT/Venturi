@@ -214,6 +214,95 @@ static NATIVE_SIZES: std::sync::LazyLock<DecodeSizes> = std::sync::LazyLock::new
     shown: HashMap::new(),
 });
 
+fn interrupted_fill(keyframes: bool, shutdown: bool) -> ControlFlow<WalkOutcome> {
+    let dir = vv_media::test_support::TempDir::new("vv-render-ahead-interruption");
+    let mut project = Project::default();
+    let media = video_media(&mut project, 32, 24);
+    project.media_pool[media].path = dir.join("unavailable.mp4");
+    let shared = Arc::new(SharedState {
+        caches: SharedFrameCache::new(),
+        target: LiveTarget::still(0),
+        cache_budget_bytes: AtomicUsize::new(usize::MAX),
+        caught_up: AtomicBool::new(false),
+        lookahead_secs: AtomicU64::new(1f64.to_bits()),
+        behind_secs: AtomicU64::new(0),
+        viewer_scale: AtomicU64::new(1f64.to_bits()),
+    });
+    let (tx, _rx) = mpsc::channel();
+    let jumps = if shutdown {
+        drop(RenderAhead {
+            shared: shared.clone(),
+            tx,
+            handle: None,
+            served_keyframe: false,
+        });
+        // A new cycle may snapshot the jump already issued by Drop.
+        shared.target.jumps()
+    } else {
+        shared.target.jumps.fetch_add(1, Ordering::Relaxed);
+        0
+    };
+    let segments = [WantedRange {
+        media_id: media,
+        source_start: 0,
+        source_end: 10,
+        timeline_start: 0,
+        rate: Rational::one(),
+    }];
+    let pacing = RefCell::new(Pacing::default());
+    let ctx = FillContext {
+        project: &project,
+        caches: &shared.caches,
+        went_backward: false,
+        cache_budget_bytes: usize::MAX,
+        from_frame: 0,
+        proxy: None,
+        sizes: &NATIVE_SIZES,
+        target: &shared.target,
+        jumps,
+        window: &segments,
+        hw_priority: HwPriority::Normal,
+        keyframe_first: false,
+        pacing: &pacing,
+        decide_by: None,
+    };
+    if keyframes {
+        fill_keyframes(&segments, &ctx, &mut HashMap::new())
+    } else {
+        fill_segments(&segments, &ctx, &mut HashMap::new())
+    }
+}
+
+fn assert_interrupted(outcome: ControlFlow<WalkOutcome>) {
+    assert_eq!(
+        outcome,
+        ControlFlow::Break(WalkOutcome {
+            interrupted: true,
+            caught_up: false,
+        })
+    );
+}
+
+#[test]
+fn cancelled_jump_stops_segment_fill_before_unavailable_media() {
+    assert_interrupted(interrupted_fill(false, false));
+}
+
+#[test]
+fn cancelled_jump_stops_keyframe_fill_before_unavailable_media() {
+    assert_interrupted(interrupted_fill(true, false));
+}
+
+#[test]
+fn cancelled_shutdown_survives_a_new_segment_cycle() {
+    assert_interrupted(interrupted_fill(false, true));
+}
+
+#[test]
+fn cancelled_shutdown_survives_a_new_keyframe_cycle() {
+    assert_interrupted(interrupted_fill(true, true));
+}
+
 fn media_clip(id: u64, media_id: MediaId, start: FrameIdx, len: FrameIdx) -> Clip {
     Clip::from_source_range(
         ClipId(id),

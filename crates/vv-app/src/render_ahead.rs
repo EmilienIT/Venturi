@@ -142,6 +142,7 @@ struct LiveTarget {
     /// Bumped every time the user moves the playhead (not playback): the
     /// cycle in progress serves a position no longer wanted.
     jumps: AtomicU64,
+    stopping: AtomicBool,
     /// See `RenderAhead::set_frame_stride`.
     frame_stride: AtomicI64,
     /// See `RenderAhead::set_playback_speed`: bits of an `f64`.
@@ -155,6 +156,7 @@ impl LiveTarget {
         Self {
             frame: AtomicI64::new(frame),
             jumps: AtomicU64::new(0),
+            stopping: AtomicBool::new(false),
             frame_stride: AtomicI64::new(1),
             speed: AtomicU64::new(0),
             keyframes_when_behind: AtomicBool::new(false),
@@ -391,7 +393,8 @@ impl RenderAhead {
 
 impl Drop for RenderAhead {
     fn drop(&mut self) {
-        // A cycle reads `Stop` only once it ends: a jump breaks it off now.
+        // A new cycle may snapshot the jump before Stop reaches the channel.
+        self.shared.target.stopping.store(true, Ordering::Relaxed);
         self.shared.target.jumps.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(Command::Stop);
         if let Some(h) = self.handle.take() {
@@ -1789,6 +1792,7 @@ fn fill_keyframes(
     open: &mut HashMap<MediaId, OpenDecoder>,
 ) -> ControlFlow<WalkOutcome> {
     for segment in segments {
+        ctx.check_interrupted()?;
         let media_id = segment.media_id;
         let Some(item) = ctx.project.media_pool.get(media_id) else {
             continue;
@@ -1797,6 +1801,7 @@ fn fill_keyframes(
         let max_size = ctx.sizes.max_size(media_id, item);
         let mut t = segment.source_start;
         loop {
+            ctx.check_interrupted()?;
             let (span, next) = {
                 let pacing = ctx.pacing.borrow();
                 let span = pacing.keyframe_span_at(media_id, t);
@@ -1858,12 +1863,7 @@ fn fill_keyframes(
             ctx.pacing
                 .borrow_mut()
                 .record_keyframe_span(media_id, keyframe, seek_to);
-            if ctx.target.jumps() != ctx.jumps {
-                return ControlFlow::Break(WalkOutcome {
-                    interrupted: true,
-                    caught_up: false,
-                });
-            }
+            ctx.check_interrupted()?;
             // Within the span just proven: the next seek goes past it.
             t = seek_to;
         }
@@ -1902,6 +1902,19 @@ struct FillContext<'a> {
     decide_by: Option<Instant>,
 }
 
+impl FillContext<'_> {
+    fn check_interrupted(&self) -> ControlFlow<WalkOutcome> {
+        if self.target.stopping.load(Ordering::Relaxed) || self.target.jumps() != self.jumps {
+            ControlFlow::Break(WalkOutcome {
+                interrupted: true,
+                caught_up: false,
+            })
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+}
+
 /// Decodes what is needed to cover `segments`, stopping if the budget is
 /// saturated or if the live playhead moved too far. `Break` carries the final
 /// outcome.
@@ -1911,6 +1924,7 @@ fn fill_segments(
     open: &mut HashMap<MediaId, OpenDecoder>,
 ) -> ControlFlow<WalkOutcome> {
     for segment in segments {
+        ctx.check_interrupted()?;
         let Some(item) = ctx.project.media_pool.get(segment.media_id) else {
             continue;
         };
@@ -2109,9 +2123,9 @@ fn fill_segments(
             }
             // Live target: if the playhead moved past the threshold the prefetch is
             // obsolete and it restarts immediately.
+            ctx.check_interrupted()?;
             let live = ctx.target.frame();
-            if ctx.target.jumps() != ctx.jumps
-                || (live - ctx.from_frame).abs() > threshold_frames
+            if (live - ctx.from_frame).abs() > threshold_frames
                 || ctx.decide_by.is_some_and(|by| Instant::now() >= by)
             {
                 if debug_enabled() {
