@@ -2072,6 +2072,63 @@ fn a_key_written_after_a_failed_write_joins_the_queue() {
 }
 
 #[test]
+fn a_replacement_without_a_disk_copy_survives_eviction() {
+    for degraded in [false, true] {
+        let root = TempDir::new("vv-session-level-replacement");
+        let source = root.join("source.wav");
+        std::fs::write(&source, b"source").unwrap();
+        let stamps = [stamp(&source).unwrap()];
+        let dir = root.join("levels");
+        let mut cache = LevelCache {
+            dir: Some(dir.clone()),
+            ..LevelCache::default()
+        };
+        cache.put(7, &LevelParts::Peak(0.5), Some(&stamps), false);
+        assert!(cache.path(7).unwrap().is_file());
+        if !degraded {
+            let unavailable = root.join("not-a-directory");
+            std::fs::write(&unavailable, b"blocked").unwrap();
+            cache.dir = Some(unavailable);
+        }
+        let replacement = LevelParts::Peak(0.75);
+        cache.put(7, &replacement, Some(&stamps), degraded);
+        cache.dir = Some(dir);
+        {
+            let mut state = cache.shared.state.lock().unwrap();
+            drop_oldest_parts(&mut state, 0);
+        }
+        assert_eq!(
+            cache.get(7),
+            Some(replacement),
+            "degraded={degraded}: the older file must not replace the new measure"
+        );
+        cache.put(7, &LevelParts::Peak(0.8), Some(&stamps), false);
+        {
+            let mut state = cache.shared.state.lock().unwrap();
+            drop_oldest_parts(&mut state, 0);
+            assert!(state.parts.is_empty(), "a later successful write is droppable");
+        }
+        assert_eq!(cache.get(7), Some(LevelParts::Peak(0.8)));
+    }
+}
+
+#[test]
+fn replacing_a_written_part_without_a_file_keeps_the_queue_bounded() {
+    let peak = |value| CachedParts {
+        parts: LevelParts::Peak(value),
+        sources: None,
+    };
+    let mut state = LevelsState::default();
+    for _ in 0..1000 {
+        remember(&mut state, usize::MAX, 7, peak(0.5), true);
+        remember(&mut state, usize::MAX, 7, peak(0.75), false);
+    }
+    assert!(state.queued.is_empty());
+    assert!(state.droppable.len() <= 65);
+    assert_eq!(state.parts.len(), 1);
+}
+
+#[test]
 fn a_level_whose_file_write_fails_is_not_droppable() {
     // The write fails, so the part has no copy to read back and must not be
     // evicted: the file, never `sources`, is what makes it droppable (#42).
