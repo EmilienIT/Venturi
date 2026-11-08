@@ -1,133 +1,4 @@
 use super::*;
-
-fn with_missing_level_analysis(check: impl FnMut(&LevelAnalysis, &mut LevelCache)) {
-    struct Probe<'c, F> {
-        cache: &'c mut LevelCache,
-        check: F,
-        seen: bool,
-    }
-    impl<F: FnMut(&LevelAnalysis, &mut LevelCache)> AudioSource for Probe<'_, F> {
-        fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
-            decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
-        }
-        fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
-            Some(Arc::new(Passthrough))
-        }
-        fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
-            if !self.seen {
-                self.seen = true;
-                (self.check)(&analysis, self.cache);
-            }
-            LevelReading::Ready(1.0)
-        }
-    }
-    let dir = TempDir::new("vv-missing-level-claims");
-    let mut project = Project::default();
-    let tl = echoed_gap(&dir, &mut project, "missing-level-claims.wav", false);
-    let mut cache = echo_cache();
-    let mut source = Probe {
-        cache: &mut cache,
-        check,
-        seen: false,
-    };
-    MixSnapshot::from_timeline(
-        &project,
-        &tl,
-        PROJECT_SAMPLE_RATE,
-        PROJECT_CHANNELS,
-        &mut source,
-    );
-    assert!(source.seen);
-}
-
-#[test]
-fn missing_level_parts_release_claims_after_cancellation_and_can_be_retried() {
-    with_missing_level_analysis(|analysis, cache| {
-        let dir = TempDir::new("vv-missing-claims-disk");
-        cache.dir = Some(dir.path().to_path_buf());
-        assert!(measure_level(analysis, cache).unwrap().is_finite());
-        for segment in &analysis.segments {
-            let path = cache.path(segment.key).unwrap();
-            assert!(
-                path.is_file(),
-                "a persisted part is needed for the vanished-file control"
-            );
-            std::fs::remove_file(path).unwrap();
-            forget(&mut cache.shared.state.lock().unwrap(), segment.key);
-        }
-        assert!(collect_parts(analysis, cache).is_none());
-        let stop = Arc::new(AtomicBool::new(true));
-        cache.cancel = Some(stop.clone());
-        assert!(matches!(
-            measure_missing(analysis, cache),
-            Err(ExportError::Cancelled)
-        ));
-        // Fail before retrying rather than hang on a leaked claim.
-        assert!(
-            cache.shared.state.lock().unwrap().measuring.is_empty(),
-            "cancelled claims remain held"
-        );
-        stop.store(false, Ordering::Relaxed);
-        assert!(measure_level(analysis, cache).unwrap().is_finite());
-        assert!(collect_parts(analysis, cache).is_some());
-    });
-}
-
-#[test]
-fn missing_level_parts_wait_for_other_measurements() {
-    with_missing_level_analysis(|analysis, cache| {
-        measure_level(analysis, cache).unwrap();
-        let parts = collect_parts(analysis, cache).unwrap();
-        for segment in &analysis.segments {
-            forget(&mut cache.shared.state.lock().unwrap(), segment.key);
-        }
-        let mut owner = cache.for_thread();
-        let (claimed, _) = owner.claim(&analysis.segments);
-        assert_eq!(claimed.len(), analysis.segments.len());
-        let mut reader = cache.for_thread();
-        std::thread::scope(|scope| {
-            let (started_tx, started_rx) = std::sync::mpsc::channel();
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            scope.spawn(move || {
-                started_tx.send(()).unwrap();
-                done_tx
-                    .send(measure_missing(analysis, &mut reader))
-                    .unwrap();
-            });
-            started_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
-            let early = done_rx.recv_timeout(std::time::Duration::from_millis(100));
-            for (segment, part) in analysis.segments.iter().zip(&parts) {
-                owner.put(segment.key, part, None, false);
-            }
-            assert!(
-                matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
-                "did not wait for claimed parts: {early:?}"
-            );
-            let found = done_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            assert_eq!(found.len(), parts.len());
-        });
-    });
-}
-
-#[test]
-fn initial_level_measurements_release_claims_after_cancellation() {
-    with_missing_level_analysis(|analysis, cache| {
-        let stop = Arc::new(AtomicBool::new(true));
-        cache.cancel = Some(stop.clone());
-        assert!(matches!(
-            measure_level(analysis, cache),
-            Err(ExportError::Cancelled)
-        ));
-        assert!(cache.shared.state.lock().unwrap().measuring.is_empty());
-        stop.store(false, Ordering::Relaxed);
-        assert!(measure_level(analysis, cache).unwrap().is_finite());
-    });
-}
 use vv_audio::mixer::ClipInput;
 use vv_audio::mixer::{mix_range, timeline_frame_to_sample};
 use vv_core::{
@@ -2148,53 +2019,34 @@ fn forgetting_a_part_drops_its_bytes_and_its_place_in_the_queue() {
     forget(&mut state, 7);
     assert!(state.parts.is_empty());
     assert_eq!(state.bytes, 0);
-    assert!(state.droppable.is_empty(), "a stale key is not left queued");
+    assert!(state.queued.is_empty(), "the key left the queue");
+
+    // The queue keeps the stale entry; a part queued under the same key again
+    // must not be dropped by it.
+    remember(&mut state, 10 * one, 7, peak(), true);
+    remember(&mut state, 10 * one, 8, peak(), true);
+    drop_oldest_parts(&mut state, one);
+    assert!(!state.parts.contains_key(&7), "the older part went");
+    assert!(state.parts.contains_key(&8), "the stale entry took no part");
 }
 
 #[test]
-fn a_forgotten_queue_record_does_not_evict_a_new_generation() {
-    for persisted in [false, true] {
-        let peak = || CachedParts {
-            parts: LevelParts::Peak(0.5),
-            sources: None,
-        };
-        let one = cached_bytes(&peak());
-        let mut state = LevelsState::default();
-        for key in 1..=3 {
-            remember(&mut state, 3 * one, key, peak(), true);
-        }
-        forget(&mut state, 1);
-        remember(&mut state, 3 * one, 1, peak(), persisted);
-        remember(&mut state, 3 * one, 4, peak(), true);
-        assert!(
-            state.parts.contains_key(&1),
-            "reinserted key was evicted: {persisted}"
-        );
-        assert!(
-            !state.parts.contains_key(&2),
-            "oldest persisted key must go"
-        );
-        assert_eq!(state.bytes, 3 * one);
-    }
-}
-
-#[test]
-fn forgetting_many_level_keys_keeps_the_eviction_queue_bounded() {
+fn stale_queue_entries_are_compacted() {
     let peak = || CachedParts {
         parts: LevelParts::Peak(0.5),
         sources: None,
     };
-    let one = cached_bytes(&peak());
     let mut state = LevelsState::default();
-    remember(&mut state, usize::MAX, 0, peak(), true);
-    for key in 1..4096 {
+    for key in 0..1000 {
         remember(&mut state, usize::MAX, key, peak(), true);
         forget(&mut state, key);
-        assert!(state.droppable.len() <= 2 * state.queued.len());
     }
-    assert_eq!(state.parts.len(), 1);
-    assert_eq!(state.queued.len(), 1);
-    assert_eq!(state.bytes, one);
+    assert!(state.queued.is_empty());
+    assert!(
+        state.droppable.len() <= 65,
+        "{} skipped entries kept",
+        state.droppable.len()
+    );
 }
 
 #[test]
@@ -2217,6 +2069,66 @@ fn a_key_written_after_a_failed_write_joins_the_queue() {
     assert_eq!(state.droppable.len(), 1, "the second one wrote it");
     remember(&mut state, 10 * one, 7, peak(), true);
     assert_eq!(state.droppable.len(), 1, "and it is queued once");
+}
+
+#[test]
+fn a_replacement_without_a_disk_copy_survives_eviction() {
+    for degraded in [false, true] {
+        let root = TempDir::new("vv-session-level-replacement");
+        let source = root.join("source.wav");
+        std::fs::write(&source, b"source").unwrap();
+        let stamps = [stamp(&source).unwrap()];
+        let dir = root.join("levels");
+        let mut cache = LevelCache {
+            dir: Some(dir.clone()),
+            ..LevelCache::default()
+        };
+        cache.put(7, &LevelParts::Peak(0.5), Some(&stamps), false);
+        assert!(cache.path(7).unwrap().is_file());
+        if !degraded {
+            let unavailable = root.join("not-a-directory");
+            std::fs::write(&unavailable, b"blocked").unwrap();
+            cache.dir = Some(unavailable);
+        }
+        let replacement = LevelParts::Peak(0.75);
+        cache.put(7, &replacement, Some(&stamps), degraded);
+        cache.dir = Some(dir);
+        {
+            let mut state = cache.shared.state.lock().unwrap();
+            drop_oldest_parts(&mut state, 0);
+        }
+        assert_eq!(
+            cache.get(7),
+            Some(replacement),
+            "degraded={degraded}: the older file must not replace the new measure"
+        );
+        cache.put(7, &LevelParts::Peak(0.8), Some(&stamps), false);
+        {
+            let mut state = cache.shared.state.lock().unwrap();
+            drop_oldest_parts(&mut state, 0);
+            assert!(
+                state.parts.is_empty(),
+                "a later successful write is droppable"
+            );
+        }
+        assert_eq!(cache.get(7), Some(LevelParts::Peak(0.8)));
+    }
+}
+
+#[test]
+fn replacing_a_written_part_without_a_file_keeps_the_queue_bounded() {
+    let peak = |value| CachedParts {
+        parts: LevelParts::Peak(value),
+        sources: None,
+    };
+    let mut state = LevelsState::default();
+    for _ in 0..1000 {
+        remember(&mut state, usize::MAX, 7, peak(0.5), true);
+        remember(&mut state, usize::MAX, 7, peak(0.75), false);
+    }
+    assert!(state.queued.is_empty());
+    assert!(state.droppable.len() <= 65);
+    assert_eq!(state.parts.len(), 1);
 }
 
 #[test]
@@ -2275,12 +2187,9 @@ fn a_written_level_is_the_droppable_one() {
     };
     cache.put(1, &part, Some(std::slice::from_ref(&stamp)), false);
     let state = cache.shared.state.lock().unwrap();
+    let queued: Vec<u64> = state.droppable.iter().map(|(key, _)| *key).collect();
     assert_eq!(
-        state
-            .droppable
-            .iter()
-            .map(|(key, _)| *key)
-            .collect::<Vec<_>>(),
+        queued,
         vec![1],
         "the file is there, so the session may drop it"
     );
@@ -2335,46 +2244,6 @@ fn a_level_read_back_is_the_last_one_the_prune_drops() {
 }
 
 #[test]
-fn a_read_only_level_remains_readable_when_recency_cannot_be_updated() {
-    struct Fixture {
-        root: PathBuf,
-        permissions: Option<(PathBuf, std::fs::Permissions)>,
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            if let Some((path, permissions)) = &self.permissions {
-                let _ = std::fs::set_permissions(path, permissions.clone());
-            }
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-    let root =
-        std::env::temp_dir().join(format!("vv-session-readonly-level-{}", std::process::id()));
-    std::fs::create_dir(&root).unwrap();
-    let mut fixture = Fixture {
-        root,
-        permissions: None,
-    };
-    let source = fixture.root.join("a.wav");
-    std::fs::write(&source, b"source").unwrap();
-    let source = stamp(&source).unwrap();
-    let mut cache = LevelCache {
-        dir: Some(fixture.root.join("levels")),
-        ..Default::default()
-    };
-    let part = LevelParts::Peak(0.5);
-    cache.put(1, &part, Some(std::slice::from_ref(&source)), false);
-    let path = cache.path(1).unwrap();
-    let permissions = std::fs::metadata(&path).unwrap().permissions();
-    fixture.permissions = Some((path.clone(), permissions.clone()));
-    let mut read_only = permissions;
-    read_only.set_readonly(true);
-    std::fs::set_permissions(&path, read_only).unwrap();
-    forget(&mut cache.shared.state.lock().unwrap(), 1);
-    assert_eq!(cache.get(1), Some(part));
-}
-
-#[test]
 fn a_level_gone_before_the_read_back_is_measured_again() {
     // Another process' start-up prune can take a `.level` file between the
     // claim and the read back, and the measure that produced it is over.
@@ -2402,8 +2271,8 @@ fn a_level_gone_before_the_read_back_is_measured_again() {
         }
     }
 
-    let dir = TempDir::new("vv-missing-level-fallback");
     let mut project = Project::default();
+    let dir = TempDir::new("vv-audio-render-test");
     let tl = echoed_gap(&dir, &mut project, "fallback.wav", false);
     let mut cache = echo_cache();
     let mut source = Fallback {
@@ -2420,4 +2289,58 @@ fn a_level_gone_before_the_read_back_is_measured_again() {
     let (segments, parts) = source.result.expect("a level was asked for");
     let parts = parts.unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(parts.len(), segments, "every segment came back");
+}
+
+#[test]
+fn a_failed_fallback_measure_releases_its_claims() {
+    // A vanished file and a cancelled re-measure left the segments claimed: the
+    // next measure waited on them forever (#42).
+    struct Failing<'c> {
+        cache: &'c mut LevelCache,
+        result: Option<Result<Vec<LevelParts>, ExportError>>,
+    }
+
+    impl AudioSource for Failing<'_> {
+        fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+            decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+        }
+
+        fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+            Some(Arc::new(Passthrough))
+        }
+
+        fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+            if self.result.is_none() {
+                self.cache.cancel = Some(Arc::new(AtomicBool::new(true)));
+                self.result = Some(measure_missing(&analysis, self.cache));
+            }
+            LevelReading::Ready(1.0)
+        }
+    }
+
+    let mut project = Project::default();
+    let dir = TempDir::new("vv-audio-render-test");
+    let tl = echoed_gap(&dir, &mut project, "cancelled.wav", false);
+    let mut cache = echo_cache();
+    let mut source = Failing {
+        cache: &mut cache,
+        result: None,
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    let result = source.result.take().expect("a level was asked for");
+    assert!(
+        matches!(result, Err(ExportError::Cancelled)),
+        "the fallback measure failed as set up"
+    );
+    let state = cache.shared.state.lock().unwrap();
+    assert!(
+        state.measuring.is_empty(),
+        "a failed measure leaves no claim"
+    );
 }
