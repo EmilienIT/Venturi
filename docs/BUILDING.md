@@ -128,8 +128,9 @@ are skipped locally, and fail under CI.
 ### Optional profiling
 
 Run `cargo run --release -p vv-app --features performance` to enable CPU
-profiling. Install `puffin_viewer` with `cargo install puffin_viewer --locked`,
-then run `puffin_viewer 127.0.0.1:8585` while using Venturi. The local
+profiling. Install the viewer with
+`cargo install puffin_viewer --locked --features x11`, then run
+`puffin_viewer --url 127.0.0.1:8585` while using Venturi. The local
 server streams app and egui/wgpu scopes; close the viewer when finished.
 The feature is disabled by default; normal builds have no Puffin server or
 GPU telemetry.
