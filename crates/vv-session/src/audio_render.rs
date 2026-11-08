@@ -787,6 +787,9 @@ fn remember(
     cached: CachedParts,
     on_disk: bool,
 ) {
+    if !on_disk {
+        forget(state, key);
+    }
     let bytes = cached_bytes(&cached);
     match state.parts.insert(key, cached) {
         Some(old) => state.bytes = state.bytes + bytes - cached_bytes(&old),

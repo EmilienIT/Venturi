@@ -2106,7 +2106,10 @@ fn a_replacement_without_a_disk_copy_survives_eviction() {
         {
             let mut state = cache.shared.state.lock().unwrap();
             drop_oldest_parts(&mut state, 0);
-            assert!(state.parts.is_empty(), "a later successful write is droppable");
+            assert!(
+                state.parts.is_empty(),
+                "a later successful write is droppable"
+            );
         }
         assert_eq!(cache.get(7), Some(LevelParts::Peak(0.8)));
     }
